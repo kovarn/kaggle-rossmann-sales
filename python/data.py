@@ -298,7 +298,7 @@ def date_features(g):
     g['ClosedNextDate'] = g['ClosedLastDate']
     g['OpenedLastDate'] = g.loc[g['Opened'] == 1, 'Date']
     g['OpenedNextDate'] = g['OpenedLastDate']
-    g['LastClosedSundayDate'] = g.loc[(~g['Open']) & (g['DayOfWeek'] == 7), 'Date']
+    g['LastClosedSundayDate'] = g.loc[(g['Open'] == 0) & (g['DayOfWeek'] == 7), 'Date']
 
     # Last dates filled with pad
     features = ['PromoStartedLastDate',
@@ -313,7 +313,7 @@ def date_features(g):
     g[features].fillna(value=pd.Timestamp('1970-01-01 00:00:00'), inplace=True)
 
     # ToDo: check interpretation
-    g['IsClosedForDays'] = (g['Date'] - g['ClosedLastDate']).days
+    g['IsClosedForDays'] = (g['Date'] - g['ClosedLastDate']).dt.days
 
     g['LongOpenLastDate'] = (g.loc[(g['Opened'] == 1)
                                    & (g['IsClosedForDays'] > 5)
@@ -327,7 +327,7 @@ def date_features(g):
     g[features].fillna(value=pd.Timestamp('1970-01-01 00:00:00'), inplace=True)
 
     #
-    g.loc[(~g['Open']) & (g['DayOfWeek'] == 7), 'WasClosedOnSunday'] = 1
+    g.loc[(g['Open'] == 0) & (g['DayOfWeek'] == 7), 'WasClosedOnSunday'] = 1
     g['WasClosedOnSunday'].fillna(method='pad', limit=6)
 
     # Next dates filled with backfill
@@ -341,7 +341,7 @@ def date_features(g):
     g[features].fillna(value=pd.Timestamp('2020-01-01 00:00:00'), inplace=True)
 
     # ToDo: check interpretation
-    g['WillBeClosedForDays'] = (g['OpenedNextDate'] - g['Date']).days
+    g['WillBeClosedForDays'] = (g['OpenedNextDate'] - g['Date']).dt.days
 
     g['LongClosedNextDate'] = (g.loc[(g['Closed'] == 1)
                                      & (g['WillBeClosedForDays'] > 5)
