@@ -1,5 +1,5 @@
 ##
-from collections import OrderedDict
+from collections import OrderedDict, namedtuple
 from itertools import product, chain, starmap
 
 import pandas as pd
@@ -513,6 +513,7 @@ make_after_stairs(joined, "StateHolidayCLastDate", "StateHolidayBLastDate",
                   days=stairs_steps)
 logger.debug("After stairs features, new shape {shape}".format(shape=joined.shape))
 
+##
 logger.debug("Splitting data into train and test, initial shape {shape}".format(shape=joined.shape))
 train = joined[(train_range.min() <= joined['Date'])
                & (joined['Date'] <= train_range.max())].drop('Id', axis=1)
@@ -521,3 +522,45 @@ logger.debug("Train data shape {shape}".format(shape=train.shape))
 test = joined[(test_range.min() <= joined['Date'])
               & (joined['Date'] <= test_range.max())].drop(['Sales', 'Customers'], axis=1)
 logger.debug("Test data shape {shape}".format(shape=test.shape))
+
+##
+example_stores = (
+    388,  # most typical by svd of Sales time series
+    562,  # second most typical by svd
+    851,  # large gap in 2014
+    357  # small gap
+)
+
+small_train = train[train['Store'].apply(lambda s: s in example_stores)]
+logger.debug("Small train shape {0}".format(small_train.shape))
+
+##
+dataset = namedtuple('dataset', 'train, test, actual')
+
+
+def make_fold(train, step=1, predict_interval=6 * 7, step_by=7):
+    dates = pd.date_range(train['Date'].min(), train['Date'].max())
+    total = dates.shape[0]
+    last_train = total - predict_interval - (step - 1) * step_by
+    last_train_date = dates[last_train - 1]
+    last_predict = last_train + predict_interval
+    last_predict_date = dates[last_predict - 1]
+    train_set = train[train['Date'] <= last_train_date]
+    actual = train[(train['Date'] > last_train_date) & (train['Date'] <=
+                                                        last_predict_date)]
+    actual['Id'] = np.arange(1, actual.shape[0] + 1)
+    test_set = actual.drop('Sales', axis=1)
+    return dataset(train=train_set, test=test_set, actual=actual)
+
+
+small_fold = make_fold(small_train)
+logger.debug("Small fold shapes, train: {0}, test:{1}, actual:{2}"
+             .format(small_fold.train.shape, small_fold.test.shape, small_fold.actual.shape))
+
+##
+one_train = train[train['Store'] == 388]
+one_test = test[test['Store'] == 388]
+
+logger.debug("One train shape {0}, one test shape {1}".format(one_train.shape, one_test.shape))
+
+
