@@ -361,3 +361,74 @@ def date_features(g):
 ##
 joined = joined.groupby('Store').apply(apply_grouped_by_store)
 
+
+##
+def make_decay_features(g, promo_after, promo2_after, holiday_b_before,
+                        holiday_c_before, holiday_c_after):
+    g['PromoDecay'] = g['Promo'] * np.maximum(
+        promo_after - (g['Date'] - g['PromoStartedLastDate']).dt.days
+        , 0)
+    g['StateHolidayCLastDecay'] = (1 - g['StateHolidayC']) * np.maximum(
+        holiday_c_after - (g['Date'] - g['StateHolidayCLastDate']).dt.days
+        , 0)
+    g['Promo2Decay'] = g['Promo2Active'] * np.maximum(
+        promo2_after - (g['Date'] - g['Promo2StartedDate']).dt.days
+        , 0)
+    g['StateHolidayBNextDecay'] = (1 - g['StateHolidayB']) * np.maximum(
+        holiday_b_before - (g['StateHolidayBNextDate'] - g['Date']).dt.days
+        , 0)
+    g['StateHolidayCNextDecay'] = (1 - g['StateHolidayC']) * np.maximum(
+        holiday_c_before - (g['StateHolidayCNextDate'] - g['Date']).dt.days
+        , 0)
+
+
+make_decay_features(joined, promo_after=4, promo2_after=3,
+                    holiday_b_before=3, holiday_c_before=15, holiday_c_after=3)
+
+
+##
+def scale_log_features(g, *features):
+    for f in features:
+        g[f] /= g[f].max()
+        g["{0}Log".format(f)] = np.log1p(g[f])
+        g["{0}Log".format(f)] /= g["{0}Log".format(f)].max()
+
+
+scale_log_features(joined, *decay_features, 'DateTrend')
+
+
+##
+def make_before_stairs(g, *features, days=(2, 3, 4, 5, 7, 14, 28)):
+    for f in features:
+        before = (g[f] - g['Date']).dt.days
+        for d in days:
+            g["{0}{1}before".format(f, d)] = before.apply(
+                lambda s: 1 if 0 <= s < d else 0)
+
+
+make_before_stairs(joined, "StateHolidayCNextDate", "StateHolidayBNextDate",
+                   "StateHolidayANextDate", "LongClosedNextDate",
+                   days=stairs_steps)
+
+
+##
+def make_after_stairs(g, *features, days):
+    for f in features:
+        since = (g['Date'] - g[f]).dt.days
+        for d in days:
+            g["{0}{1}after".format(f, d)] = since.apply(
+                lambda s: 1 if 0 <= s < d else 0)
+
+
+make_after_stairs(joined, "PromoStartedLastDate", days=(2, 3, 4))
+make_after_stairs(joined, "StateHolidayCLastDate", "StateHolidayBLastDate",
+                  "Promo2StartedDate", "LongOpenLastDate",
+                  days=stairs_steps)
+
+train = joined[joined[train_range.min()
+                      <= joined['Date']
+                      <= train_range.max()]].drop('Id', axis=1)
+
+test = joined[joined[test_range.min()
+                     <= joined['Date']
+                     <= test_range.max()]].drop(['Sales', 'Customers'], axis=1)
