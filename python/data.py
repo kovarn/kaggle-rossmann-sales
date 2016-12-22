@@ -45,8 +45,8 @@ train_range = pd.date_range(train_csv['Date'].min(), train_csv['Date'].max(), na
 ##
 # Fill in gaps in dates for each store
 
-
-def fill_gaps_by_store(s, g):
+def fill_gaps_by_store(g):
+    s = g['Store'].iloc[0]
     filled = (g.set_index('Date')
               .reindex(train_range)
               .fillna(value={'Store': s, 'Sales': 0, 'Customers': 0, 'Open': 0,
@@ -56,10 +56,8 @@ def fill_gaps_by_store(s, g):
     return filled.reset_index()
 
 
-#  DayOfWeek: Monday is 1, Sunday is 7 (add 1 to what is returned by pd.datetime.weekday)
-train_full = pd.concat([fill_gaps_by_store(s, g)
-                        for s, g in train_csv.groupby('Store')],
-                       ignore_index=True)
+#  DayOfWeek: Monday is 0, Sunday is 6
+train_full = train_csv.groupby('Store').apply(fill_gaps_by_store).reset_index(drop=True)
 
 ##
 test_csv = pd.read_csv("../input/test.csv", low_memory=False)
