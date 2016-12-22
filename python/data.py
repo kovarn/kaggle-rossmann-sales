@@ -232,6 +232,10 @@ def is_promo2_active(row):
     return 0
 
 
+joined['Promo2Active'] = joined[['Promo2', 'Promo2SinceYear',
+                                 'Promo2SinceWeek', 'PromoInterval',
+                                 'Date']].apply(is_promo2_active, axis=1)
+
 ##
 # Numerical feature for PromoInterval
 month_to_nums = {'Jan,Apr,Jul,Oct': 3,
@@ -267,9 +271,6 @@ def apply_grouped_by_store(g):
     g = date_features(g)
     g = merge_with_fourier_features(g)
     return g
-
-
-joined = joined.groupby('Store').apply(apply_grouped_by_store)
 
 
 ##
@@ -355,3 +356,8 @@ def date_features(g):
     g[features].fillna(value=pd.Timestamp('2020-01-01 00:00:00'), inplace=True)
 
     return g
+
+
+##
+joined = joined.groupby('Store').apply(apply_grouped_by_store)
+
