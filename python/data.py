@@ -177,3 +177,181 @@ future_date = pd.to_datetime("2099-01-01")
 ##
 # Combine data
 tftc = pd.concat([train_full, test_csv])
+joined = pd.merge(tftc, store, on='Store', how='inner')
+
+##
+# Add binary feature for each day of week.
+# ToDo: add term for Sunday.
+for i in range(1, 7):
+    joined['DayOfWeek{i}'.format(i=i)] = (joined['DayOfWeek']
+                                          .apply(lambda s: 1 if s == i else 0))
+
+##
+# Add binary features for StateHoliday categories, and one numerical feature
+for i in 'ABC':
+    joined['StateHoliday{i}'.format(i=i)] = (joined['StateHoliday']
+                                             .apply(lambda s: 1 if s == i.lower() else 0))
+
+letter_to_number = {'0': 1, 'a': 2, 'b': 3, 'c': 4}
+
+joined['StateHolidayN'] = joined['StateHoliday'].apply(lambda x: letter_to_number[x])
+
+##
+joined['CompetitionOpen'] = (joined['Date']
+                             >= joined['CompetitionOpenDate']).astype(int)
+
+##
+letter_to_number = {'a': 1, 'b': 2, 'c': 3, 'd': 4}
+
+joined['StoreTypeN'] = joined['StoreType'].apply(lambda x: letter_to_number[x])
+joined['AssortmentN'] = joined['Assortment'].apply(lambda x: letter_to_number[x])
+
+##
+# Represent date offsets
+joined['DateTrend'] = ((joined['Date'] - joined['Date'].min())
+                       .apply(lambda s: s.days + 1))
+
+##
+# Binary feature to indicate if Promo2 is active
+# ToDo: Check interpretation
+month_to_nums = {'Jan,Apr,Jul,Oct': [1, 4, 7, 10],
+                 'Feb,May,Aug,Nov': [2, 5, 8, 11],
+                 'Mar,Jun,Sept,Dec': [3, 6, 9, 12]}
+
+
+def is_promo2_active(row):
+    if row['Promo2']:
+        start_year = row['Promo2SinceYear']
+        start_week = row['Promo2SinceWeek']
+        interval = row['PromoInterval']
+        date = row['Date']
+        if ((date.year > start_year)
+            or ((date.year == start_year) and (date.week >= start_week))):
+            if date.month in month_to_nums[interval]:
+                return 1
+    return 0
+
+
+##
+# Numerical feature for PromoInterval
+month_to_nums = {'Jan,Apr,Jul,Oct': 3,
+                 'Feb,May,Aug,Nov': 2,
+                 'Mar,Jun,Sept,Dec': 4}
+
+joined['PromoIntervalN'] = (joined['PromoInterval']
+                            .apply(lambda s: 1 if pd.isnull(s)
+else month_to_nums[s]))
+##
+# Day, month, year
+joined['MDay'] = joined['Date'].apply(lambda s: s.day)
+joined['Month'] = joined['Date'].apply(lambda s: s.month)
+joined['Year'] = joined['Date'].apply(lambda s: s.year)
+
+##
+# Binary feature for day
+for i in range(1, 32):
+    joined['MDay{i}'.format(i=i)] = (joined['MDay']
+                                     .apply(lambda s: 1 if s == i else 0))
+
+##
+# Binary feature for month
+for i in range(1, 13):
+    joined['Month{i}'.format(i=i)] = (joined['Month']
+                                      .apply(lambda s: 1 if s == i else 0))
+
+
+##
+# Apply transformations grouped by Store
+
+def apply_grouped_by_store(g):
+    g = date_features(g)
+    g = merge_with_fourier_features(g)
+    return g
+
+
+joined = joined.groupby('Store').apply(apply_grouped_by_store)
+
+
+##
+# Merge fourier features
+def merge_with_fourier_features(g):
+    return pd.merge(g, fourier_features, on='Date')
+
+
+##
+def date_features(g):
+    g['PromoStarted'] = g['Promo'].diff().apply(lambda s: 1 if s > 0 else 0)
+    g['Promo2Started'] = g['Promo2Active'].diff().apply(lambda s: 1 if s > 0 else 0)
+    g['Opened'] = g['Open'].diff().apply(lambda s: 1 if s > 0 else 0)
+    g['Closed'] = g['Open'].diff().apply(lambda s: 1 if s < 0 else 0)
+    g['TomorrowClosed'] = g['Closed'].shift(-1).fillna(0)
+
+    # These are incomplete, NA values filled later.
+    g['PromoStartedLastDate'] = g.loc[g['PromoStarted'] == 1, 'Date']
+    g['Promo2StartedDate'] = g.loc[g['Promo2Started'] == 1, 'Date']
+    g['StateHolidayCLastDate'] = g.loc[g['StateHoliday'] == "c", 'Date']
+    g['StateHolidayCNextDate'] = g['StateHolidayCLastDate']
+    g['StateHolidayBLastDate'] = g.loc[g['StateHoliday'] == "b", 'Date']
+    g['StateHolidayBNextDate'] = g['StateHolidayBLastDate']
+    g['StateHolidayANextDate'] = g.loc[g['StateHoliday'] == "a", 'Date']
+    g['ClosedLastDate'] = g.loc[g['Closed'] == 1, 'Date']
+    g['ClosedNextDate'] = g['ClosedLastDate']
+    g['OpenedLastDate'] = g.loc[g['Opened'] == 1, 'Date']
+    g['OpenedNextDate'] = g['OpenedLastDate']
+    g['LastClosedSundayDate'] = g.loc[(~g['Open']) & (g['DayOfWeek'] == 7), 'Date']
+
+    # Last dates filled with pad
+    features = ['PromoStartedLastDate',
+                'Promo2StartedDate',
+                'StateHolidayCLastDate',
+                'StateHolidayBLastDate',
+                'ClosedLastDate',
+                'OpenedLastDate',
+                'LastClosedSundayDate'
+                ]
+    g[features].fillna(method='pad', inplace=True)
+    g[features].fillna(value=pd.Timestamp('1970-01-01 00:00:00'), inplace=True)
+
+    # ToDo: check interpretation
+    g['IsClosedForDays'] = (g['Date'] - g['ClosedLastDate']).days
+
+    g['LongOpenLastDate'] = (g.loc[(g['Opened'] == 1)
+                                   & (g['IsClosedForDays'] > 5)
+                                   & (g['IsClosedForDays'] < 180),
+                                   'Date'])
+
+    # Last dates filled with pad
+    features = ['LongOpenLastDate',
+                ]
+    g[features].fillna(method='pad', inplace=True)
+    g[features].fillna(value=pd.Timestamp('1970-01-01 00:00:00'), inplace=True)
+
+    #
+    g.loc[(~g['Open']) & (g['DayOfWeek'] == 7), 'WasClosedOnSunday'] = 1
+    g['WasClosedOnSunday'].fillna(method='pad', limit=6)
+
+    # Next dates filled with backfill
+    features = ['StateHolidayCNextDate',
+                'OpenedNextDate',
+                'ClosedNextDate',
+                'StateHolidayBNextDate',
+                'StateHolidayANextDate'
+                ]
+    g[features].fillna(method='backfill', inplace=True)
+    g[features].fillna(value=pd.Timestamp('2020-01-01 00:00:00'), inplace=True)
+
+    # ToDo: check interpretation
+    g['WillBeClosedForDays'] = (g['OpenedNextDate'] - g['Date']).days
+
+    g['LongClosedNextDate'] = (g.loc[(g['Closed'] == 1)
+                                     & (g['WillBeClosedForDays'] > 5)
+                                     & (g['WillBeClosedForDays'] < 180),
+                                     'Date'])
+
+    # Next dates filled with backfill
+    features = ['LongClosedNextDate',
+                ]
+    g[features].fillna(method='backfill', inplace=True)
+    g[features].fillna(value=pd.Timestamp('2020-01-01 00:00:00'), inplace=True)
+
+    return g
