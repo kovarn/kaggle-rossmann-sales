@@ -5,7 +5,42 @@ from itertools import product, chain, starmap
 import pandas as pd
 import numpy as np
 
+import logging
+
+# ToDo: Remove this
+REDUCE_DATA = True
+
+logger = logging.getLogger(__name__)
+
+logger.setLevel(logging.DEBUG)
+
+fh = logging.FileHandler('../rossman.log')
+fh.setLevel(logging.DEBUG)
+
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+
+fh_formatter = logging.Formatter('%(asctime)s %(name)-12s %(levelname)-8s %(message)s')
+ch_formatter = logging.Formatter('%(name)-12s: %(levelname)-8s %(message)s')
+
+fh.setFormatter(fh_formatter)
+ch.setFormatter(ch_formatter)
+
+logger.addHandler(ch)
+logger.addHandler(fh)
+
+logger.info("Start run **************************")
+
 pd.set_option('float_format', "{0:.2f}".format)
+
+
+def check_nulls(df, column=None):
+    if column:
+        return not pd.isnull(df[column]).any()
+    else:
+        return not pd.isnull(df).any().any()
+
+
 ##
 # md
 """
@@ -14,6 +49,12 @@ Read the store data
 
 ##
 store = pd.read_csv("../input/store.csv")
+logger.debug("Read store data: {0} rows, {1} columns".format(*store.shape))
+
+if REDUCE_DATA:
+    logger.debug("DROPPING DATA FOR DEBUGGING")
+    store = store.iloc[:50, :]
+    logger.debug("Store data reduced to {0} rows".format(store.shape[0]))
 
 
 ##
@@ -32,14 +73,21 @@ store['CompetitionOpenDate'] = store.apply(get_date, axis=1)
 
 ##
 train_csv = pd.read_csv("../input/train.csv", low_memory=False)
+logger.debug("Read train data: {0} rows, {1} columns".format(*train_csv.shape))
 
 ##
 train_csv['Open'] = train_csv['Sales'].apply(lambda s: 1 if s > 0 else 0)
+assert check_nulls(train_csv, 'Open')
+logger.debug("Patch train_csv Open")
+
 train_csv['Date'] = pd.to_datetime(train_csv['Date'])
+assert check_nulls(train_csv, 'Date')
+logger.debug("Convert train_csv date to datetime")
 
 ##
 # Generate DatetimeIndex for the range of dates in the training set
 train_range = pd.date_range(train_csv['Date'].min(), train_csv['Date'].max(), name='Date')
+logger.debug("Training range is {0} - {1}".format(train_range.min(), train_range.max()))
 
 
 ##
@@ -47,33 +95,47 @@ train_range = pd.date_range(train_csv['Date'].min(), train_csv['Date'].max(), na
 
 def fill_gaps_by_store(g):
     s = g['Store'].iloc[0]
+    logger.debug("Store {s} initial shape {shape}"
+                 .format(s=s, shape=g.shape))
     filled = (g.set_index('Date')
               .reindex(train_range)
               .fillna(value={'Store': s, 'Sales': 0, 'Customers': 0, 'Open': 0,
                              'Promo': 0, 'StateHoliday': '0',
                              'SchoolHoliday': 0}))
     filled['DayOfWeek'] = filled.index.weekday + 1
+    logger.debug("Store {s} shape after filling {shape}"
+                 .format(s=s, shape=filled.shape))
     return filled.reset_index()
 
 
 #  DayOfWeek: Monday is 0, Sunday is 6
+logger.debug("Expand index of each store to cover full date range")
 train_full = train_csv.groupby('Store').apply(fill_gaps_by_store).reset_index(drop=True)
+assert check_nulls(train_full)
+logger.debug("Expanded train data from shape {0} to {1}".format(train_csv.shape, train_full.shape))
 
 ##
 test_csv = pd.read_csv("../input/test.csv", low_memory=False)
+logger.debug("Read test data: {0} rows, {1} columns".format(*test_csv.shape))
 
 ##
 test_csv['Open'].fillna(value=1, inplace=True)
+assert check_nulls(test_csv, 'Open')
+logger.debug("Fill nas test_csv Open")
 test_csv['Date'] = pd.to_datetime(test_csv['Date'])
+assert check_nulls(test_csv, 'Date')
+logger.debug("Convert test_csv date to datetime")
 
 ##
 # Generate DatetimeIndex for the range of dates in the testing set
 # and the full range over both training and test sets.
 
 test_range = pd.date_range(test_csv['Date'].min(), test_csv['Date'].max(), name='Date')
+logger.debug("Test data range is {0} - {1}".format(test_range.min(), test_range.max()))
 
 full_range = pd.date_range(min(train_csv['Date'].min(), test_csv['Date'].min()),
                            max(train_csv['Date'].max(), test_csv['Date'].max()), name='Date')
+logger.debug("Full data range is {0} - {1}".format(full_range.min(), full_range.max()))
 
 
 ##
@@ -94,6 +156,7 @@ def fourier(ts_length, period, terms):
     terms_range = range(1, terms + 1)
     for term, (fn_name, fn) in product(terms_range, fns.items()):
         A[fn_name + str(term)] = fn(2 * np.pi * term * np.arange(1, ts_length + 1) / period)
+    logger.debug("Created fourier terms of shape {0}".format(A.shape))
     return A
 
 
@@ -177,7 +240,12 @@ future_date = pd.to_datetime("2099-01-01")
 ##
 # Combine data
 tftc = pd.concat([train_full, test_csv])
+logger.debug("Combined train and test data. Train data shape {0}. Test data shape {1}. Combined data shape {2}".format(
+    train_full.shape, test_csv.shape, tftc.shape
+))
+
 joined = pd.merge(tftc, store, on='Store', how='inner')
+logger.debug("Merged with store data, shape {0}".format(joined.shape))
 
 ##
 # Add binary feature for each day of week.
@@ -185,31 +253,38 @@ joined = pd.merge(tftc, store, on='Store', how='inner')
 for i in range(1, 7):
     joined['DayOfWeek{i}'.format(i=i)] = (joined['DayOfWeek']
                                           .apply(lambda s: 1 if s == i else 0))
+    assert check_nulls(joined, 'DayOfWeek{i}'.format(i=i))
 
 ##
 # Add binary features for StateHoliday categories, and one numerical feature
 for i in 'ABC':
     joined['StateHoliday{i}'.format(i=i)] = (joined['StateHoliday']
                                              .apply(lambda s: 1 if s == i.lower() else 0))
+    assert check_nulls(joined, 'StateHoliday{i}'.format(i=i))
 
 letter_to_number = {'0': 1, 'a': 2, 'b': 3, 'c': 4}
 
 joined['StateHolidayN'] = joined['StateHoliday'].apply(lambda x: letter_to_number[x])
+assert check_nulls(joined, 'StateHolidayN')
 
 ##
 joined['CompetitionOpen'] = (joined['Date']
                              >= joined['CompetitionOpenDate']).astype(int)
+assert check_nulls(joined, 'CompetitionOpen')
 
 ##
 letter_to_number = {'a': 1, 'b': 2, 'c': 3, 'd': 4}
 
 joined['StoreTypeN'] = joined['StoreType'].apply(lambda x: letter_to_number[x])
 joined['AssortmentN'] = joined['Assortment'].apply(lambda x: letter_to_number[x])
+assert check_nulls(joined, 'StoreTypeN')
+assert check_nulls(joined, 'AssortmentN')
 
 ##
 # Represent date offsets
 joined['DateTrend'] = ((joined['Date'] - joined['Date'].min())
                        .apply(lambda s: s.days + 1))
+assert check_nulls(joined, 'DateTrend')
 
 ##
 # Binary feature to indicate if Promo2 is active
@@ -235,6 +310,7 @@ def is_promo2_active(row):
 joined['Promo2Active'] = joined[['Promo2', 'Promo2SinceYear',
                                  'Promo2SinceWeek', 'PromoInterval',
                                  'Date']].apply(is_promo2_active, axis=1)
+assert check_nulls(joined, 'Promo2Active')
 
 ##
 # Numerical feature for PromoInterval
@@ -243,8 +319,9 @@ month_to_nums = {'Jan,Apr,Jul,Oct': 3,
                  'Mar,Jun,Sept,Dec': 4}
 
 joined['PromoIntervalN'] = (joined['PromoInterval']
-                            .apply(lambda s: 1 if pd.isnull(s)
-else month_to_nums[s]))
+                            .apply(lambda s: 1 if pd.isnull(s) else month_to_nums[s]))
+assert check_nulls(joined, 'PromoIntervalN')
+
 ##
 # Day, month, year
 joined['MDay'] = joined['Date'].apply(lambda s: s.day)
@@ -263,13 +340,19 @@ for i in range(1, 13):
     joined['Month{i}'.format(i=i)] = (joined['Month']
                                       .apply(lambda s: 1 if s == i else 0))
 
+logger.debug("Generated direct features, new shape {0}".format(joined.shape))
+
 
 ##
 # Apply transformations grouped by Store
 
 def apply_grouped_by_store(g):
+    s = g['Store'].iloc[0]
+    logger.debug("Store {s} initial shape {shape}".format(s=s, shape=g.shape))
     g = date_features(g)
+    logger.debug("Store {s} after date features shape {shape}".format(s=s, shape=g.shape))
     g = merge_with_fourier_features(g)
+    logger.debug("Store {s} final shape {shape}".format(s=s, shape=g.shape))
     return g
 
 
@@ -360,6 +443,7 @@ def date_features(g):
 
 ##
 joined = joined.groupby('Store').apply(apply_grouped_by_store)
+logger.debug('Expanded with date and fourier features shape {0}'.format(joined.shape))
 
 
 ##
@@ -384,6 +468,7 @@ def make_decay_features(g, promo_after, promo2_after, holiday_b_before,
 
 make_decay_features(joined, promo_after=4, promo2_after=3,
                     holiday_b_before=3, holiday_c_before=15, holiday_c_after=3)
+logger.debug("Decay features, new shape {shape}".format(shape=joined.shape))
 
 
 ##
@@ -395,6 +480,7 @@ def scale_log_features(g, *features):
 
 
 scale_log_features(joined, *decay_features, 'DateTrend')
+logger.debug("Scale log features, new shape {shape}".format(shape=joined.shape))
 
 
 ##
@@ -409,6 +495,7 @@ def make_before_stairs(g, *features, days=(2, 3, 4, 5, 7, 14, 28)):
 make_before_stairs(joined, "StateHolidayCNextDate", "StateHolidayBNextDate",
                    "StateHolidayANextDate", "LongClosedNextDate",
                    days=stairs_steps)
+logger.debug("Before stairs features, new shape {shape}".format(shape=joined.shape))
 
 
 ##
@@ -424,11 +511,13 @@ make_after_stairs(joined, "PromoStartedLastDate", days=(2, 3, 4))
 make_after_stairs(joined, "StateHolidayCLastDate", "StateHolidayBLastDate",
                   "Promo2StartedDate", "LongOpenLastDate",
                   days=stairs_steps)
+logger.debug("After stairs features, new shape {shape}".format(shape=joined.shape))
 
-train = joined[joined[train_range.min()
-                      <= joined['Date']
-                      <= train_range.max()]].drop('Id', axis=1)
+logger.debug("Splitting data into train and test, initial shape {shape}".format(shape=joined.shape))
+train = joined[(train_range.min() <= joined['Date'])
+               & (joined['Date'] <= train_range.max())].drop('Id', axis=1)
+logger.debug("Train data shape {shape}".format(shape=train.shape))
 
-test = joined[joined[test_range.min()
-                     <= joined['Date']
-                     <= test_range.max()]].drop(['Sales', 'Customers'], axis=1)
+test = joined[(test_range.min() <= joined['Date'])
+              & (joined['Date'] <= test_range.max())].drop(['Sales', 'Customers'], axis=1)
+logger.debug("Test data shape {shape}".format(shape=test.shape))
