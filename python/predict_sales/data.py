@@ -93,9 +93,11 @@ categorical_numeric_features = chain(
 ##
 def check_nulls(df, column=None):
     if column:
-        return not pd.isnull(df[column]).any()
-    else:
-        return not pd.isnull(df).any().any()
+        df = df[column]
+    anynulls = pd.isnull(df[column]).any()
+    if isinstance(anynulls, bool):
+        return not anynulls
+    return not anynulls.any()
 
 
 ##
@@ -128,7 +130,7 @@ def fourier(ts_length, period, terms):
     terms_range = range(1, terms + 1)
     for term, (fn_name, fn) in product(terms_range, fns.items()):
         A[fn_name + str(term)] = fn(2 * np.pi * term * np.arange(1, ts_length + 1) / period)
-    logger.debug("Created fourier terms of shape {0}".format(A.shape))
+    logger.info("Created fourier terms of shape {0}".format(A.shape))
     return A
 
 
@@ -166,19 +168,19 @@ class Data:
         logger.info("Start processing input **************************")
         ##
         store = pd.read_csv(store_file)
-        logger.debug("Read store data: {0} rows, {1} columns".format(*store.shape))
+        logger.info("Read store data: {0} rows, {1} columns".format(*store.shape))
 
         if REDUCE_DATA:
-            logger.debug("DROPPING DATA FOR DEBUGGING")
+            logger.info("DROPPING DATA FOR DEBUGGING")
             store = store.iloc[:50, :]
-            logger.debug("Store data reduced to {0} rows".format(store.shape[0]))
+            logger.info("Store data reduced to {0} rows".format(store.shape[0]))
 
         ##
         store['CompetitionOpenDate'] = store.apply(get_date, axis=1)
 
         ##
         train_csv = pd.read_csv(train_file, low_memory=False)
-        logger.debug("Read train data: {0} rows, {1} columns".format(*train_csv.shape))
+        logger.info("Read train data: {0} rows, {1} columns".format(*train_csv.shape))
 
         ##
         train_csv['Open'] = train_csv['Sales'].apply(lambda s: 1 if s > 0 else 0)
@@ -192,7 +194,7 @@ class Data:
         ##
         # Generate DatetimeIndex for the range of dates in the training set
         train_range = pd.date_range(train_csv['Date'].min(), train_csv['Date'].max(), name='Date')
-        logger.debug("Training range is {0} - {1}".format(train_range.min(), train_range.max()))
+        logger.info("Training range is {0} - {1}".format(train_range.min(), train_range.max()))
 
         ##
         # Fill in gaps in dates for each store
@@ -212,14 +214,14 @@ class Data:
             return filled.reset_index()
 
         #  DayOfWeek: Monday is 0, Sunday is 6
-        logger.debug("Expand index of each store to cover full date range")
+        logger.info("Expand index of each store to cover full date range")
         train_full = train_csv.groupby('Store').apply(fill_gaps_by_store).reset_index(drop=True)
         assert check_nulls(train_full)
-        logger.debug("Expanded train data from shape {0} to {1}".format(train_csv.shape, train_full.shape))
+        logger.info("Expanded train data from shape {0} to {1}".format(train_csv.shape, train_full.shape))
 
         ##
         test_csv = pd.read_csv(test_file, low_memory=False)
-        logger.debug("Read test data: {0} rows, {1} columns".format(*test_csv.shape))
+        logger.info("Read test data: {0} rows, {1} columns".format(*test_csv.shape))
 
         ##
         test_csv['Open'].fillna(value=1, inplace=True)
@@ -234,11 +236,11 @@ class Data:
         # and the full range over both training and test sets.
 
         test_range = pd.date_range(test_csv['Date'].min(), test_csv['Date'].max(), name='Date')
-        logger.debug("Test data range is {0} - {1}".format(test_range.min(), test_range.max()))
+        logger.info("Test data range is {0} - {1}".format(test_range.min(), test_range.max()))
 
         full_range = pd.date_range(min(train_csv['Date'].min(), test_csv['Date'].min()),
                                    max(train_csv['Date'].max(), test_csv['Date'].max()), name='Date')
-        logger.debug("Full data range is {0} - {1}".format(full_range.min(), full_range.max()))
+        logger.info("Full data range is {0} - {1}".format(full_range.min(), full_range.max()))
 
         ##
         fourier_features = fourier(len(full_range), period=365, terms=fourier_terms)
@@ -253,13 +255,13 @@ class Data:
         ##
         # Combine data
         tftc = pd.concat([train_full, test_csv])
-        logger.debug(
+        logger.info(
             "Combined train and test data. Train data shape {0}. Test data shape {1}. Combined data shape {2}".format(
                 train_full.shape, test_csv.shape, tftc.shape
             ))
 
         joined = pd.merge(tftc, store, on='Store', how='inner')
-        logger.debug("Merged with store data, shape {0}".format(joined.shape))
+        logger.info("Merged with store data, shape {0}".format(joined.shape))
 
         ##
         # Add binary feature for each day of week.
@@ -335,7 +337,7 @@ class Data:
             joined['Month{i}'.format(i=i)] = (joined['Month']
                                               .apply(lambda s: 1 if s == i else 0))
 
-        logger.debug("Generated direct features, new shape {0}".format(joined.shape))
+        logger.info("Generated direct features, new shape {0}".format(joined.shape))
 
         ##
         # Apply transformations grouped by Store
@@ -385,8 +387,9 @@ class Data:
                         'OpenedLastDate',
                         'LastClosedSundayDate'
                         ]
-            g[features].fillna(method='pad', inplace=True)
-            g[features].fillna(value=pd.Timestamp('1970-01-01 00:00:00'), inplace=True)
+            g[features] = (g[features].fillna(method='pad')
+                           .fillna(value=pd.Timestamp('1970-01-01 00:00:00')))
+            assert check_nulls(g, features)
 
             # ToDo: check interpretation
             g['IsClosedForDays'] = (g['Date'] - g['ClosedLastDate']).dt.days
@@ -399,8 +402,9 @@ class Data:
             # Last dates filled with pad
             features = ['LongOpenLastDate',
                         ]
-            g[features].fillna(method='pad', inplace=True)
-            g[features].fillna(value=pd.Timestamp('1970-01-01 00:00:00'), inplace=True)
+            g[features] = (g[features].fillna(method='pad')
+                           .fillna(value=pd.Timestamp('1970-01-01 00:00:00')))
+            assert check_nulls(g, features)
 
             #
             g.loc[(g['Open'] == 0) & (g['DayOfWeek'] == 7), 'WasClosedOnSunday'] = 1
@@ -413,8 +417,9 @@ class Data:
                         'StateHolidayBNextDate',
                         'StateHolidayANextDate'
                         ]
-            g[features].fillna(method='backfill', inplace=True)
-            g[features].fillna(value=pd.Timestamp('2020-01-01 00:00:00'), inplace=True)
+            g[features] = (g[features].fillna(method='backfill')
+                           .fillna(value=pd.Timestamp('2020-01-01 00:00:00')))
+            assert check_nulls(g, features)
 
             # ToDo: check interpretation
             g['WillBeClosedForDays'] = (g['OpenedNextDate'] - g['Date']).dt.days
@@ -427,26 +432,27 @@ class Data:
             # Next dates filled with backfill
             features = ['LongClosedNextDate',
                         ]
-            g[features].fillna(method='backfill', inplace=True)
-            g[features].fillna(value=pd.Timestamp('2020-01-01 00:00:00'), inplace=True)
+            g[features] = (g[features].fillna(method='backfill')
+                           .fillna(value=pd.Timestamp('2020-01-01 00:00:00')))
+            assert check_nulls(g, features)
 
             return g
 
         ##
         joined = joined.groupby('Store').apply(apply_grouped_by_store)
-        logger.debug('Expanded with date and fourier features shape {0}'.format(joined.shape))
+        logger.info('Expanded with date and fourier features shape {0}'.format(joined.shape))
 
         ##
         old_shape = joined.shape
         make_decay_features(joined, promo_after=4, promo2_after=3,
                             holiday_b_before=3, holiday_c_before=15, holiday_c_after=3)
-        logger.debug("Decay features, new shape {shape}".format(shape=joined.shape))
+        logger.info("Decay features, new shape {shape}".format(shape=joined.shape))
         assert joined.shape[0] == old_shape[0] and joined.shape[1] > old_shape[1]
 
         ##
         old_shape = joined.shape
         scale_log_features(joined, *decay_features, 'DateTrend')
-        logger.debug("Scale log features, new shape {shape}".format(shape=joined.shape))
+        logger.info("Scale log features, new shape {shape}".format(shape=joined.shape))
         assert joined.shape[0] == old_shape[0] and joined.shape[1] > old_shape[1]
 
         ##
@@ -454,7 +460,7 @@ class Data:
         make_before_stairs(joined, "StateHolidayCNextDate", "StateHolidayBNextDate",
                            "StateHolidayANextDate", "LongClosedNextDate",
                            days=stairs_steps)
-        logger.debug("Before stairs features, new shape {shape}".format(shape=joined.shape))
+        logger.info("Before stairs features, new shape {shape}".format(shape=joined.shape))
         assert joined.shape[0] == old_shape[0] and joined.shape[1] > old_shape[1]
 
         ##
@@ -463,34 +469,33 @@ class Data:
         make_after_stairs(joined, "StateHolidayCLastDate", "StateHolidayBLastDate",
                           "Promo2StartedDate", "LongOpenLastDate",
                           days=stairs_steps)
-        logger.debug("After stairs features, new shape {shape}".format(shape=joined.shape))
+        logger.info("After stairs features, new shape {shape}".format(shape=joined.shape))
         assert joined.shape[0] == old_shape[0] and joined.shape[1] > old_shape[1]
 
         ##
-        logger.debug("Splitting data into train and test, initial shape {shape}".format(shape=joined.shape))
+        logger.info("Splitting data into train and test, initial shape {shape}".format(shape=joined.shape))
         cls.train = joined[(train_range.min() <= joined['Date'])
                            & (joined['Date'] <= train_range.max())].drop('Id', axis=1)
-        logger.debug("Train data shape {shape}".format(shape=cls.train.shape))
+        logger.info("Train data shape {shape}".format(shape=cls.train.shape))
 
         ##
         cls.test = joined[(test_range.min() <= joined['Date'])
                           & (joined['Date'] <= test_range.max())].drop(['Sales', 'Customers'], axis=1)
-        logger.debug("Test data shape {shape}".format(shape=cls.test.shape))
+        logger.info("Test data shape {shape}".format(shape=cls.test.shape))
 
         ##
-        cls.small_train = cls.train[cls.train['Store'].apply(lambda s: s in example_stores)]
-        logger.debug("Small train shape {0}".format(cls.small_train.shape))
+        if not REDUCE_DATA:
+            cls.small_train = cls.train[cls.train['Store'].apply(lambda s: s in example_stores)]
+            logger.info("Small train shape {0}".format(cls.small_train.shape))
 
-        ##
-        cls.small_fold = make_fold(cls.small_train)
-        logger.debug("Small fold shapes, train: {0}, test:{1}, actual:{2}"
-                     .format(cls.small_fold.train.shape, cls.small_fold.test.shape, cls.small_fold.actual.shape))
+            cls.small_fold = make_fold(cls.small_train)
+            logger.info("Small fold shapes, train: {0}, test:{1}, actual:{2}"
+                        .format(cls.small_fold.train.shape, cls.small_fold.test.shape, cls.small_fold.actual.shape))
 
-        ##
-        cls.one_train = cls.train[cls.train['Store'] == 388]
-        cls.one_test = cls.test[cls.test['Store'] == 388]
+            cls.one_train = cls.train[cls.train['Store'] == 388]
+            cls.one_test = cls.test[cls.test['Store'] == 388]
 
-        logger.debug("One train shape {0}, one test shape {1}".format(cls.one_train.shape, cls.one_test.shape))
+            logger.info("One train shape {0}, one test shape {1}".format(cls.one_train.shape, cls.one_test.shape))
 
 
 ##
