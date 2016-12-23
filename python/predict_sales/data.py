@@ -26,7 +26,7 @@ fourier_names = ['Fourier' + str(x) for x in range(1, 2 * fourier_terms + 1)]
 
 ##
 base_linear_features = ["Promo", "Promo2Active", "SchoolHoliday",
-                        "DayOfWeek1", "DayOfWeek2", "DayOfWeek2", "DayOfWeek3",
+                        "DayOfWeek1", "DayOfWeek2", "DayOfWeek3",
                         "DayOfWeek4", "DayOfWeek5", "DayOfWeek6",
                         "StateHolidayA", "StateHolidayB", "StateHolidayC",
                         "CompetitionOpen", "Open"]
@@ -42,7 +42,7 @@ log_decay_features = list(map("{0}Log".format, decay_features))
 ##
 stairs_steps = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 21, 28)
 
-stairs_features = chain(
+stairs_features = list(chain(
     ["Opened", "PromoStarted", "Promo2Started", "TomorrowClosed",
      "WasClosedOnSunday"],
     map("PromoStartedLastDate{0}after".format, (2, 3, 4)),
@@ -52,7 +52,7 @@ stairs_features = chain(
     starmap("{1}{0}after".format,
             product(stairs_steps, ("StateHolidayCLastDate", "StateHolidayBLastDate",
                                    "Promo2StartedDate", "LongOpenLastDate")))
-)
+))
 
 ##
 month_day_features = map("MDay{0}".format, range(1, 32))
@@ -60,12 +60,12 @@ month_day_features = map("MDay{0}".format, range(1, 32))
 month_features = map("Month{0}".format, range(1, 13))
 
 ##
-linear_features = chain(base_linear_features, trend_features, decay_features,
+linear_features = list(chain(base_linear_features, trend_features, decay_features,
                         log_decay_features, stairs_features, fourier_names,
-                        month_day_features, month_features)
+                        month_day_features, month_features))
 
 glm_features = ("Promo", "SchoolHoliday",
-                "DayOfWeek1", "DayOfWeek2", "DayOfWeek2", "DayOfWeek3",
+                "DayOfWeek1", "DayOfWeek2", "DayOfWeek3",
                 "DayOfWeek4", "DayOfWeek5", "DayOfWeek6",
                 "StateHolidayA", "StateHolidayB", "StateHolidayC",
                 "CompetitionOpen", "PromoDecay", "Promo2Decay",
@@ -74,7 +74,7 @@ glm_features = ("Promo", "SchoolHoliday",
                 "Fourier1", "Fourier2", "Fourier3", "Fourier4")
 
 log_lm_features = ("Promo", "Promo2Active", "SchoolHoliday",
-                   "DayOfWeek1", "DayOfWeek2", "DayOfWeek2", "DayOfWeek3",
+                   "DayOfWeek1", "DayOfWeek2", "DayOfWeek3",
                    "DayOfWeek4", "DayOfWeek5", "DayOfWeek6",
                    "StateHolidayA", "StateHolidayB", "StateHolidayC",
                    "CompetitionOpen", "PromoDecay", "Promo2Decay",
@@ -82,12 +82,12 @@ log_lm_features = ("Promo", "Promo2Active", "SchoolHoliday",
                    "StateHolidayCLastDecay", "StateHolidayCNextDecay",
                    "Fourier1", "Fourier2", "Fourier3", "Fourier4")
 
-categorical_numeric_features = chain(
+categorical_numeric_features = list(chain(
     ("Store", "Promo", "Promo2Active", "SchoolHoliday", "DayOfWeek",
      "StateHolidayN", "CompetitionOpen", "StoreTypeN", "AssortmentN",
      "DateTrend", "MDay", "Month", "Year"), decay_features, stairs_features,
     fourier_names
-)
+))
 
 
 ##
@@ -154,6 +154,7 @@ def is_promo2_active(row):
     return 0
 
 
+##
 class Data:
     train = None
     test = None
@@ -161,6 +162,16 @@ class Data:
     small_fold = None
     one_train = None
     one_test = None
+
+    @classmethod
+    def save(cls, train_file, test_file):
+        import pickle
+        with open(train_file, mode='wb') as pkl_file:
+            pickle.dump(Data.train, pkl_file)
+            logger.info('Saved train data to {0}'.format(train_file))
+        with open(test_file, mode='wb') as pkl_file:
+            pickle.dump(Data.test, pkl_file)
+            logger.info('Saved test data to {0}'.format(test_file))
 
     ##
     @classmethod
