@@ -1,3 +1,6 @@
+import numpy as np
+
+
 def remove_before_changepoint(train):
     changepoints = {837: '2014-03-16',
                     700: '2014-01-03',
@@ -14,4 +17,10 @@ def remove_before_changepoint(train):
                     91: '2014-01-14'}
     for store, date in changepoints.items():
         train = train.query('Store != {store} or Date > "{date}"'.format(store=store, date=date))
+    return train
 
+
+def log_transform_train(train):
+    train = train.query('Sales > 0')
+    train['Sales'] = np.log(train['Sales'])
+    return train
