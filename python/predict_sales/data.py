@@ -94,7 +94,7 @@ categorical_numeric_features = chain(
 def check_nulls(df, column=None):
     if column:
         df = df[column]
-    anynulls = pd.isnull(df[column]).any()
+    anynulls = pd.isnull(df).any()
     if isinstance(anynulls, bool):
         return not anynulls
     return not anynulls.any()
