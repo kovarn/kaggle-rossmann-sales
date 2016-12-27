@@ -89,6 +89,13 @@ categorical_numeric_features = list(chain(
     fourier_names
 ))
 
+xgb_features = list(chain(("Store", "DayOfWeek", "Open", "Promo", "SchoolHoliday",
+                           "StoreTypeN", "AssortmentN", "CompetitionDistance",
+                           "CompetitionOpenSinceMonth", "CompetitionOpenSinceYear",
+                           "Promo2", "Promo2SinceWeek", "Promo2SinceYear",
+                           "PromoIntervalN", "Month", "Year", "MDay"),
+                          decay_features, stairs_features, fourier_names))
+
 
 ##
 def check_nulls(df, column=None):
@@ -566,23 +573,21 @@ example_stores = (
     357  # small gap
 )
 
+
 ##
-dataset = namedtuple('dataset', 'train, test, actual')
-
-
-def make_fold(train, step=1, predict_interval=6 * 7, step_by=7):
+def make_fold(train, step, predict_interval, step_by):
+    cross_val_fold = namedtuple('cross_val_fold', 'train_idx test_idx')
+    train = train.reset_index(drop=True)
     dates = pd.date_range(train['Date'].min(), train['Date'].max())
     total = dates.shape[0]
     last_train = total - predict_interval - (step - 1) * step_by
     last_train_date = dates[last_train - 1]
     last_predict = last_train + predict_interval
     last_predict_date = dates[last_predict - 1]
-    train_set = train[train['Date'] <= last_train_date]
-    actual = train[(train['Date'] > last_train_date) & (train['Date'] <=
-                                                        last_predict_date)]
-    actual['Id'] = np.arange(1, actual.shape[0] + 1)
-    test_set = actual.drop('Sales', axis=1)
-    return dataset(train=train_set, test=test_set, actual=actual)
+    train_idx = train.index[train['Date'] <= last_train_date]
+    test_idx = train.index[(train['Date'] > last_train_date) & (train['Date'] <=
+                                                                last_predict_date)]
+    return cross_val_fold(train_idx=train_idx, test_idx=test_idx)
 
 
 if __name__ == '__main__':
