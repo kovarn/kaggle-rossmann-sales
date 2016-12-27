@@ -8,7 +8,7 @@ import numpy as np
 import logging
 
 # ToDo: Remove this
-REDUCE_DATA = True
+REDUCE_DATA = 50
 
 logger = logging.getLogger(__name__)
 logger.info("Module loaded")
@@ -190,7 +190,7 @@ class Data:
 
         if REDUCE_DATA:
             logger.info("DROPPING DATA FOR DEBUGGING")
-            store = store.iloc[:50, :]
+            store = store.iloc[:REDUCE_DATA, :]
             logger.info("Store data reduced to {0} rows".format(store.shape[0]))
 
         ##
