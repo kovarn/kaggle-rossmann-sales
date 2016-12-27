@@ -1,8 +1,10 @@
 import pickle
 
+import numpy as np
+
 from predict_sales.data import linear_features
 from .functions import remove_before_changepoint, log_transform_train, remove_outliers_lm, select_features, \
-    allow_modifications, log_revert_predicted, exp_rmspe, predict_glmnet
+    allow_modifications, log_revert_predicted, exp_rmspe, predict_elasticnet
 
 import logging
 
@@ -40,8 +42,22 @@ def glm_predictions(train, test):
     test_tr = select_features(test, linear_features)
     logger.info("Test, selected linear features, shape {0}".format(test_tr.shape))
 
-    pred = predict_glmnet(train_tr, test_tr, exp_rmspe, steps=15, step_by=3).predicted
-    pred = log_revert_predicted(pred)
+    fitted_elasticnet = predict_elasticnet(train_tr, test_tr, exp_rmspe, steps=15, step_by=3)
+    errors = fitted_elasticnet.errors
+
+    logger.info("Average cv error over all stores: {0}".format(np.mean(errors)))
+    preds = fitted_elasticnet.predicted
+
+    for pred in preds:
+        log_revert_predicted(pred)
 
     with open('glmnet.pkl', mode='wb') as pkl_file:
-        pickle.dump(pred, pkl_file)
+        pickle.dump(preds, pkl_file)
+
+    return preds
+
+##
+@allow_modifications(False)
+def xgb_predictions(train, test):
+    ##
+    logger.info("")
