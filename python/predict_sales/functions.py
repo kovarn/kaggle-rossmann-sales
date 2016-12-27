@@ -8,6 +8,8 @@ from sklearn import linear_model, model_selection
 from .data import log_lm_features, check_nulls, make_fold
 import logging
 
+import xgboost as xgb
+
 logger = logging.getLogger(__name__)
 logger.info("Module loaded")
 
@@ -72,7 +74,8 @@ def log_transform_train(train):
 
 @allow_modifications(False)
 def select_features(train, features):
-    base_columns = [c for c in ['Sales', 'Id', 'Store', 'Date'] if c in train.columns]
+    base_columns = [c for c in ['Sales', 'Id', 'Store', 'Date']
+                    if c in train.columns and c not in features]
     columns_to_select = base_columns + list(features)
     return train[columns_to_select]
 
@@ -160,7 +163,7 @@ def cv_generator(train, steps, predict_interval, step_by):
 @allow_modifications(False)
 def predict_elasticnet(train, test=None, with_cv=False, eval_function=None, steps=13,
                        predict_interval=6 * 7, step_by=7,
-                       l1_ratio=[ .99, 1], family="gaussian",
+                       l1_ratio=[.99, 1], family="gaussian",
                        n_alphas=100):
     logger.info("{f} train shape {tr}, test shape {te}"
                 .format(f=predict_elasticnet.__name__, tr=train.shape, te=test.shape))
@@ -197,7 +200,6 @@ def predict_elasticnet(train, test=None, with_cv=False, eval_function=None, step
             logger.info('Store {0}. CV errors {1}'.format(store_train['Store'][0], cv_errors))
             logger.info('CV median error {0}'.format(cv_median_error))
 
-
         # logger.info('alpha: {alpha}, l1 ratio: {l1_ratio}'
         #             .format(alpha=fit.alpha_, l1_ratio=fit.l1_ratio_))
         # cv = list(cv_generator(store_train, steps, predict_interval=predict_interval, step_by=step_by))
@@ -207,6 +209,31 @@ def predict_elasticnet(train, test=None, with_cv=False, eval_function=None, step
         return Predictions(predicted=store_test, fit=fit, errors=cv_median_error, store=None)
 
     return Predictions(*zip(*predict_per_store(train, test, predict_elasticnet_per_store)))
+
+
+@allow_modifications(False)
+def predict_xgboost(train, test, eval_function, params, nrounds):
+    logger.info("{f} train shape {tr}, test shape {te}"
+                .format(f=predict_xgboost.__name__, tr=train.shape, te=test.shape))
+    Predictions = namedtuple('Predictions', 'predicted, fit')
+    logger.info("Prediction fields {0}".format(Predictions._fields))
+
+    without_sales = train.drop(['Sales', 'Date'], axis=1)
+    dtrain = xgb.DMatrix(without_sales,
+                         label=train['Sales'])
+    dtest = xgb.DMatrix(test.drop(['Id', 'Date'], axis=1))
+
+    # specify validations set to watch performance
+    watchlist = [(dtrain, 'train')]
+    fit = xgb.train(params=params, dtrain=dtrain, num_boost_round=nrounds, evals=watchlist,
+                    feval=eval_function, early_stopping_rounds=100, maximize=False,
+                    verbose_eval=100)
+
+    pred = fit.predict(dtest)
+    predicted = test.copy()
+    predicted['PredictedSales'] = pred
+
+    return Predictions(predicted=predicted, fit=fit)
 
 
 def predict_per_store(train, test, predict_fun):
@@ -231,3 +258,11 @@ def rmspe(predicted, actual):
 
 def exp_rmspe(predicted, actual):
     return rmspe(np.exp(predicted), np.exp(actual))
+
+
+def getinfo(dtrain, param):
+    pass
+
+
+def xgb_expm1_rmspe(predicted, dtrain):
+    return "rmspe", rmspe(np.expm1(predicted), np.expm1(dtrain.get_label()))
