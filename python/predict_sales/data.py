@@ -61,8 +61,8 @@ month_features = map("Month{0}".format, range(1, 13))
 
 ##
 linear_features = list(chain(base_linear_features, trend_features, decay_features,
-                        log_decay_features, stairs_features, fourier_names,
-                        month_day_features, month_features))
+                             log_decay_features, stairs_features, fourier_names,
+                             month_day_features, month_features))
 
 glm_features = ("Promo", "SchoolHoliday",
                 "DayOfWeek1", "DayOfWeek2", "DayOfWeek3",
@@ -419,7 +419,10 @@ class Data:
 
             #
             g.loc[(g['Open'] == 0) & (g['DayOfWeek'] == 7), 'WasClosedOnSunday'] = 1
-            g['WasClosedOnSunday'].fillna(method='pad', limit=6)
+            g['WasClosedOnSunday'] = (g['WasClosedOnSunday']
+                                      .fillna(method='pad', limit=6)
+                                      .fillna(value=0))
+            assert check_nulls(g, 'WasClosedOnSunday')
 
             # Next dates filled with backfill
             features = ['StateHolidayCNextDate',
