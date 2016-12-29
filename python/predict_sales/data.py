@@ -1,14 +1,15 @@
 ##
+import logging
 from collections import OrderedDict, namedtuple
+from functools import partial
 from itertools import product, chain, starmap
 
-import pandas as pd
 import numpy as np
-
-import logging
+import pandas as pd
 
 # ToDo: Remove this
-REDUCE_DATA = 50
+REDUCE_DATA = 20
+SMALL_TRAIN = False
 
 logger = logging.getLogger(__name__)
 logger.info("Module loaded")
@@ -143,26 +144,89 @@ def fourier(ts_length, period, terms):
 
 ##
 # ToDo: Check interpretation
-month_to_nums = {'Jan,Apr,Jul,Oct': [1, 4, 7, 10],
-                 'Feb,May,Aug,Nov': [2, 5, 8, 11],
-                 'Mar,Jun,Sept,Dec': [3, 6, 9, 12]}
+month_to_nums_dict = {'Jan,Apr,Jul,Oct': frozenset((1, 4, 7, 10)),
+                      'Feb,May,Aug,Nov': frozenset((2, 5, 8, 11)),
+                      'Mar,Jun,Sept,Dec': frozenset((3, 6, 9, 12))}
 
 
+def month_to_nums(months):
+    if months:
+        return month_to_nums_dict[months]
+
+
+# 'Promo2', 'Promo2SinceYear', 'Promo2SinceWeek', 'PromoInterval', 'Date'
 def is_promo2_active(row):
-    if row['Promo2']:
-        start_year = row['Promo2SinceYear']
-        start_week = row['Promo2SinceWeek']
-        interval = row['PromoInterval']
-        date = row['Date']
+    if row[0]:
+        start_year = row[1]
+        start_week = row[2]
+        interval = row[3]
+        date = row[4]
         if ((date.year > start_year)
             or ((date.year == start_year) and (date.week >= start_week))):
-            if date.month in month_to_nums[interval]:
+            if date.month in interval:
                 return 1
     return 0
+
+def is_promo2_active2(row):
+    start_year = row[1]
+    start_week = row[2]
+    interval = row[3]
+    date = row[4]
+    if ((date.year > start_year)
+        or ((date.year == start_year) and (date.week >= start_week))):
+        if date.month in interval:
+            return 1
+    return 0
+
+##
+def make_decay_features(g, promo_after, promo2_after, holiday_b_before,
+                        holiday_c_before, holiday_c_after):
+    g['PromoDecay'] = g['Promo'] * np.maximum(
+        promo_after - (g['Date'] - g['PromoStartedLastDate']).dt.days
+        , 0)
+    g['StateHolidayCLastDecay'] = (1 - g['StateHolidayC']) * np.maximum(
+        holiday_c_after - (g['Date'] - g['StateHolidayCLastDate']).dt.days
+        , 0)
+    g['Promo2Decay'] = g['Promo2Active'] * np.maximum(
+        promo2_after - (g['Date'] - g['Promo2StartedDate']).dt.days
+        , 0)
+    g['StateHolidayBNextDecay'] = (1 - g['StateHolidayB']) * np.maximum(
+        holiday_b_before - (g['StateHolidayBNextDate'] - g['Date']).dt.days
+        , 0)
+    g['StateHolidayCNextDecay'] = (1 - g['StateHolidayC']) * np.maximum(
+        holiday_c_before - (g['StateHolidayCNextDate'] - g['Date']).dt.days
+        , 0)
+
+
+##
+def scale_log_features(g, *features):
+    for f in features:
+        g[f] /= g[f].max()
+        g["{0}Log".format(f)] = np.log1p(g[f])
+        g["{0}Log".format(f)] /= g["{0}Log".format(f)].max()
+
+
+##
+def make_before_stairs(g, *features, days=(2, 3, 4, 5, 7, 14, 28)):
+    for f in features:
+        before = (g[f] - g['Date']).dt.days
+        for d in days:
+            g["{0}{1}before".format(f, d)] = before.apply(
+                lambda s: 1 if 0 <= s < d else 0)
+
+
+##
+def make_after_stairs(g, *features, days):
+    for f in features:
+        since = (g['Date'] - g[f]).dt.days
+        for d in days:
+            g["{0}{1}after".format(f, d)] = since.apply(
+                lambda s: 1 if 0 <= s < d else 0)
 
 
 ##
 class Data:
+    ##
     train = None
     test = None
     small_train = None
@@ -174,10 +238,10 @@ class Data:
     def save(cls, train_file, test_file):
         import pickle
         with open(train_file, mode='wb') as pkl_file:
-            pickle.dump(Data.train, pkl_file)
+            pickle.dump(cls.train, pkl_file)
             logger.info('Saved train data to {0}'.format(train_file))
         with open(test_file, mode='wb') as pkl_file:
-            pickle.dump(Data.test, pkl_file)
+            pickle.dump(cls.test, pkl_file)
             logger.info('Saved test data to {0}'.format(test_file))
 
     ##
@@ -185,7 +249,12 @@ class Data:
     def process_input(cls, store_file, train_file, test_file):
         logger.info("Start processing input **************************")
         ##
-        store = pd.read_csv(store_file)
+        store = pd.read_csv(store_file,
+                            parse_dates={
+                                'CompetitionOpenDate': ['CompetitionOpenSinceYear', 'CompetitionOpenSinceMonth']},
+                            date_parser=partial(pd.to_datetime, format="%Y %m", errors='coerce'),
+                            converters={'PromoInterval': month_to_nums}
+                            )
         logger.info("Read store data: {0} rows, {1} columns".format(*store.shape))
 
         if REDUCE_DATA:
@@ -194,24 +263,18 @@ class Data:
             logger.info("Store data reduced to {0} rows".format(store.shape[0]))
 
         ##
-        store['CompetitionOpenDate'] = store.apply(get_date, axis=1)
-
-        ##
-        train_csv = pd.read_csv(train_file, low_memory=False)
+        train_csv = pd.read_csv(train_file, dtype={'StateHoliday': 'str'}, parse_dates=['Date'])
         logger.info("Read train data: {0} rows, {1} columns".format(*train_csv.shape))
 
         ##
-        train_csv['Open'] = train_csv['Sales'].apply(lambda s: 1 if s > 0 else 0)
+        train_csv['Open'] = train_csv['Sales'].astype(bool).astype(int)
         assert check_nulls(train_csv, 'Open')
         logger.debug("Patch train_csv Open")
 
-        train_csv['Date'] = pd.to_datetime(train_csv['Date'])
-        assert check_nulls(train_csv, 'Date')
-        logger.debug("Convert train_csv date to datetime")
-
         ##
         # Generate DatetimeIndex for the range of dates in the training set
-        train_range = pd.date_range(train_csv['Date'].min(), train_csv['Date'].max(), name='Date')
+        train_range_lims = (train_csv['Date'].min(), train_csv['Date'].max())
+        train_range = pd.date_range(train_range_lims[0], train_range_lims[1], name='Date')
         logger.info("Training range is {0} - {1}".format(train_range.min(), train_range.max()))
 
         ##
@@ -236,28 +299,28 @@ class Data:
         train_full = train_csv.groupby('Store').apply(fill_gaps_by_store).reset_index(drop=True)
         assert check_nulls(train_full)
         logger.info("Expanded train data from shape {0} to {1}".format(train_csv.shape, train_full.shape))
+        del train_csv
+        # gc.collect()
 
         ##
-        test_csv = pd.read_csv(test_file, low_memory=False)
+        test_csv = pd.read_csv(test_file, dtype={'StateHoliday': 'str'}, parse_dates=['Date'])
         logger.info("Read test data: {0} rows, {1} columns".format(*test_csv.shape))
 
         ##
         test_csv['Open'].fillna(value=1, inplace=True)
         assert check_nulls(test_csv, 'Open')
         logger.debug("Fill nas test_csv Open")
-        test_csv['Date'] = pd.to_datetime(test_csv['Date'])
-        assert check_nulls(test_csv, 'Date')
-        logger.debug("Convert test_csv date to datetime")
 
         ##
         # Generate DatetimeIndex for the range of dates in the testing set
         # and the full range over both training and test sets.
 
-        test_range = pd.date_range(test_csv['Date'].min(), test_csv['Date'].max(), name='Date')
+        test_range_lims = (test_csv['Date'].min(), test_csv['Date'].max())
+        test_range = pd.date_range(test_range_lims[0], test_range_lims[1], name='Date')
         logger.info("Test data range is {0} - {1}".format(test_range.min(), test_range.max()))
 
-        full_range = pd.date_range(min(train_csv['Date'].min(), test_csv['Date'].min()),
-                                   max(train_csv['Date'].max(), test_csv['Date'].max()), name='Date')
+        full_range = pd.date_range(min(train_range_lims[0], test_range_lims[0]),
+                                   max(train_range_lims[1], test_range_lims[1]), name='Date')
         logger.info("Full data range is {0} - {1}".format(full_range.min(), full_range.max()))
 
         ##
@@ -277,48 +340,55 @@ class Data:
             "Combined train and test data. Train data shape {0}. Test data shape {1}. Combined data shape {2}".format(
                 train_full.shape, test_csv.shape, tftc.shape
             ))
+        del test_csv
 
         joined = pd.merge(tftc, store, on='Store', how='inner')
         logger.info("Merged with store data, shape {0}".format(joined.shape))
+
+        del store, tftc
+        # gc.collect()
 
         ##
         # Add binary feature for each day of week.
         # ToDo: add term for Sunday.
         for i in range(1, 7):
-            joined['DayOfWeek{i}'.format(i=i)] = (joined['DayOfWeek']
-                                                  .apply(lambda s: 1 if s == i else 0))
+            joined['DayOfWeek{i}'.format(i=i)] = (joined['DayOfWeek'] == i).astype(int)
             assert check_nulls(joined, 'DayOfWeek{i}'.format(i=i))
+        logger.info("Generated Day of Week features")
 
         ##
         # Add binary features for StateHoliday categories, and one numerical feature
         for i in 'ABC':
-            joined['StateHoliday{i}'.format(i=i)] = (joined['StateHoliday']
-                                                     .apply(lambda s: 1 if s == i.lower() else 0))
+            joined['StateHoliday{i}'.format(i=i)] = (joined['StateHoliday'] == i.lower()).astype(int)
             assert check_nulls(joined, 'StateHoliday{i}'.format(i=i))
 
         letter_to_number = {'0': 1, 'a': 2, 'b': 3, 'c': 4}
 
-        joined['StateHolidayN'] = joined['StateHoliday'].apply(lambda x: letter_to_number[x])
+        joined['StateHolidayN'] = joined['StateHoliday'].replace(letter_to_number)
         assert check_nulls(joined, 'StateHolidayN')
+        logger.info("Generated State Holiday features")
 
         ##
         joined['CompetitionOpen'] = (joined['Date']
                                      >= joined['CompetitionOpenDate']).astype(int)
         assert check_nulls(joined, 'CompetitionOpen')
+        logger.info("Generated Competition Open")
 
         ##
         letter_to_number = {'a': 1, 'b': 2, 'c': 3, 'd': 4}
 
-        joined['StoreTypeN'] = joined['StoreType'].apply(lambda x: letter_to_number[x])
-        joined['AssortmentN'] = joined['Assortment'].apply(lambda x: letter_to_number[x])
+        joined['StoreTypeN'] = joined['StoreType'].replace(letter_to_number)
+        joined['AssortmentN'] = joined['Assortment'].replace(letter_to_number)
         assert check_nulls(joined, 'StoreTypeN')
         assert check_nulls(joined, 'AssortmentN')
+        logger.info("Generated Store Type")
 
         ##
         # Represent date offsets
         joined['DateTrend'] = ((joined['Date'] - joined['Date'].min())
                                .apply(lambda s: s.days + 1))
         assert check_nulls(joined, 'DateTrend')
+        logger.info("Generated Date Trend")
 
         ##
         # Binary feature to indicate if Promo2 is active
@@ -329,31 +399,32 @@ class Data:
 
         ##
         # Numerical feature for PromoInterval
-        month_to_nums = {'Jan,Apr,Jul,Oct': 3,
-                         'Feb,May,Aug,Nov': 2,
-                         'Mar,Jun,Sept,Dec': 4}
+        # month_to_nums = {'Jan,Apr,Jul,Oct': 3,
+        #                  'Feb,May,Aug,Nov': 2,
+        #                  'Mar,Jun,Sept,Dec': 4}
 
         joined['PromoIntervalN'] = (joined['PromoInterval']
-                                    .apply(lambda s: 1 if pd.isnull(s) else month_to_nums[s]))
+                                    .apply(lambda s: 1 if pd.isnull(s) else min(s) + 1))
         assert check_nulls(joined, 'PromoIntervalN')
+        logger.info("Generated Promo2 features")
 
         ##
         # Day, month, year
-        joined['MDay'] = joined['Date'].apply(lambda s: s.day)
-        joined['Month'] = joined['Date'].apply(lambda s: s.month)
-        joined['Year'] = joined['Date'].apply(lambda s: s.year)
+        joined['MDay'] = joined['Date'].dt.day
+        joined['Month'] = joined['Date'].dt.month
+        joined['Year'] = joined['Date'].dt.year
 
         ##
         # Binary feature for day
         for i in range(1, 32):
-            joined['MDay{i}'.format(i=i)] = (joined['MDay']
-                                             .apply(lambda s: 1 if s == i else 0))
+            joined['MDay{i}'.format(i=i)] = (joined['MDay'] == i).astype(int)
 
         ##
         # Binary feature for month
         for i in range(1, 13):
-            joined['Month{i}'.format(i=i)] = (joined['Month']
-                                              .apply(lambda s: 1 if s == i else 0))
+            joined['Month{i}'.format(i=i)] = (joined['Month'] == i).astype(int)
+
+        logger.info("Generated date related feature")
 
         logger.info("Generated direct features, new shape {0}".format(joined.shape))
 
@@ -376,23 +447,23 @@ class Data:
 
         ##
         def date_features(g):
-            g['PromoStarted'] = g['Promo'].diff().apply(lambda s: 1 if s > 0 else 0)
-            g['Promo2Started'] = g['Promo2Active'].diff().apply(lambda s: 1 if s > 0 else 0)
-            g['Opened'] = g['Open'].diff().apply(lambda s: 1 if s > 0 else 0)
-            g['Closed'] = g['Open'].diff().apply(lambda s: 1 if s < 0 else 0)
-            g['TomorrowClosed'] = g['Closed'].shift(-1).fillna(0)
+            g['PromoStarted'] = (g['Promo'].diff() > 0)
+            g['Promo2Started'] = (g['Promo2Active'].diff() > 0)
+            g['Opened'] = (g['Open'].diff() > 0)
+            g['Closed'] = (g['Open'].diff() < 0)
+            g['TomorrowClosed'] = g['Closed'].shift(-1).fillna(False)
 
             # These are incomplete, NA values filled later.
-            g['PromoStartedLastDate'] = g.loc[g['PromoStarted'] == 1, 'Date']
-            g['Promo2StartedDate'] = g.loc[g['Promo2Started'] == 1, 'Date']
+            g['PromoStartedLastDate'] = g.loc[g['PromoStarted'], 'Date']
+            g['Promo2StartedDate'] = g.loc[g['Promo2Started'], 'Date']
             g['StateHolidayCLastDate'] = g.loc[g['StateHoliday'] == "c", 'Date']
             g['StateHolidayCNextDate'] = g['StateHolidayCLastDate']
             g['StateHolidayBLastDate'] = g.loc[g['StateHoliday'] == "b", 'Date']
             g['StateHolidayBNextDate'] = g['StateHolidayBLastDate']
             g['StateHolidayANextDate'] = g.loc[g['StateHoliday'] == "a", 'Date']
-            g['ClosedLastDate'] = g.loc[g['Closed'] == 1, 'Date']
+            g['ClosedLastDate'] = g.loc[g['Closed'], 'Date']
             g['ClosedNextDate'] = g['ClosedLastDate']
-            g['OpenedLastDate'] = g.loc[g['Opened'] == 1, 'Date']
+            g['OpenedLastDate'] = g.loc[g['Opened'], 'Date']
             g['OpenedNextDate'] = g['OpenedLastDate']
             g['LastClosedSundayDate'] = g.loc[(g['Open'] == 0) & (g['DayOfWeek'] == 7), 'Date']
 
@@ -412,7 +483,7 @@ class Data:
             # ToDo: check interpretation
             g['IsClosedForDays'] = (g['Date'] - g['ClosedLastDate']).dt.days
 
-            g['LongOpenLastDate'] = (g.loc[(g['Opened'] == 1)
+            g['LongOpenLastDate'] = (g.loc[(g['Opened'])
                                            & (g['IsClosedForDays'] > 5)
                                            & (g['IsClosedForDays'] < 180),
                                            'Date'])
@@ -445,7 +516,7 @@ class Data:
             # ToDo: check interpretation
             g['WillBeClosedForDays'] = (g['OpenedNextDate'] - g['Date']).dt.days
 
-            g['LongClosedNextDate'] = (g.loc[(g['Closed'] == 1)
+            g['LongClosedNextDate'] = (g.loc[(g['Closed'])
                                              & (g['WillBeClosedForDays'] > 5)
                                              & (g['WillBeClosedForDays'] < 180),
                                              'Date'])
@@ -495,17 +566,17 @@ class Data:
 
         ##
         logger.info("Splitting data into train and test, initial shape {shape}".format(shape=joined.shape))
-        cls.train = joined[(train_range.min() <= joined['Date'])
-                           & (joined['Date'] <= train_range.max())].drop('Id', axis=1)
+        d1, d2 = train_range_lims
+        cls.train = joined.query('@d1 <= Date <= @d2').drop('Id', axis=1)
         logger.info("Train data shape {shape}".format(shape=cls.train.shape))
 
         ##
-        cls.test = joined[(test_range.min() <= joined['Date'])
-                          & (joined['Date'] <= test_range.max())].drop(['Sales', 'Customers'], axis=1)
+        d1, d2 = test_range_lims
+        cls.test = joined.query('@d1 <= Date <= @d2').drop(['Sales', 'Customers'], axis=1)
         logger.info("Test data shape {shape}".format(shape=cls.test.shape))
 
         ##
-        if not REDUCE_DATA:
+        if SMALL_TRAIN:
             cls.small_train = cls.train[cls.train['Store'].apply(lambda s: s in example_stores)]
             logger.info("Small train shape {0}".format(cls.small_train.shape))
 
@@ -517,52 +588,6 @@ class Data:
             cls.one_test = cls.test[cls.test['Store'] == 388]
 
             logger.info("One train shape {0}, one test shape {1}".format(cls.one_train.shape, cls.one_test.shape))
-
-
-##
-def make_decay_features(g, promo_after, promo2_after, holiday_b_before,
-                        holiday_c_before, holiday_c_after):
-    g['PromoDecay'] = g['Promo'] * np.maximum(
-        promo_after - (g['Date'] - g['PromoStartedLastDate']).dt.days
-        , 0)
-    g['StateHolidayCLastDecay'] = (1 - g['StateHolidayC']) * np.maximum(
-        holiday_c_after - (g['Date'] - g['StateHolidayCLastDate']).dt.days
-        , 0)
-    g['Promo2Decay'] = g['Promo2Active'] * np.maximum(
-        promo2_after - (g['Date'] - g['Promo2StartedDate']).dt.days
-        , 0)
-    g['StateHolidayBNextDecay'] = (1 - g['StateHolidayB']) * np.maximum(
-        holiday_b_before - (g['StateHolidayBNextDate'] - g['Date']).dt.days
-        , 0)
-    g['StateHolidayCNextDecay'] = (1 - g['StateHolidayC']) * np.maximum(
-        holiday_c_before - (g['StateHolidayCNextDate'] - g['Date']).dt.days
-        , 0)
-
-
-##
-def scale_log_features(g, *features):
-    for f in features:
-        g[f] /= g[f].max()
-        g["{0}Log".format(f)] = np.log1p(g[f])
-        g["{0}Log".format(f)] /= g["{0}Log".format(f)].max()
-
-
-##
-def make_before_stairs(g, *features, days=(2, 3, 4, 5, 7, 14, 28)):
-    for f in features:
-        before = (g[f] - g['Date']).dt.days
-        for d in days:
-            g["{0}{1}before".format(f, d)] = before.apply(
-                lambda s: 1 if 0 <= s < d else 0)
-
-
-##
-def make_after_stairs(g, *features, days):
-    for f in features:
-        since = (g['Date'] - g[f]).dt.days
-        for d in days:
-            g["{0}{1}after".format(f, d)] = since.apply(
-                lambda s: 1 if 0 <= s < d else 0)
 
 
 ##
@@ -590,5 +615,9 @@ def make_fold(train, step, predict_interval, step_by):
     return cross_val_fold(train_idx=train_idx, test_idx=test_idx)
 
 
+##
 if __name__ == '__main__':
-    Data.process_input("../input/store.csv", "../input/train.csv", "../input/test.csv")
+    ##
+    store_file, train_file, test_file = "../input/store.csv", "../input/train.csv", "../input/test.csv"
+    ##
+    Data.process_input(store_file, train_file, test_file)
