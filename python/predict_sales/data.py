@@ -1,4 +1,6 @@
 ##
+import pyximport; pyximport.install()
+from . import data_helpers
 import logging
 from collections import OrderedDict, namedtuple
 from functools import partial
@@ -8,8 +10,9 @@ import numpy as np
 import pandas as pd
 
 # ToDo: Remove this
-REDUCE_DATA = 20
+REDUCE_DATA = False
 SMALL_TRAIN = False
+CYTHON = True
 
 logger = logging.getLogger(__name__)
 logger.info("Module loaded")
@@ -392,10 +395,18 @@ class Data:
 
         ##
         # Binary feature to indicate if Promo2 is active
-        joined['Promo2Active'] = joined[['Promo2', 'Promo2SinceYear',
-                                         'Promo2SinceWeek', 'PromoInterval',
-                                         'Date']].apply(is_promo2_active, axis=1)
-        assert check_nulls(joined, 'Promo2Active')
+        if not CYTHON:
+            joined['Promo2Active'] = joined[['Promo2', 'Promo2SinceYear',
+                                             'Promo2SinceWeek', 'PromoInterval',
+                                             'Date']].apply(is_promo2_active, axis=1)
+            assert check_nulls(joined, 'Promo2Active')
+        else:
+            joined['Promo2Active'] = data_helpers.is_promo2_active_cython(
+                joined['Promo2'].values, joined['Promo2SinceYear'].values.astype(np.int64),
+                joined['Promo2SinceWeek'].values.astype(np.int64),
+                joined['Date'].dt.year.values, joined['Date'].dt.week.values, joined['Date'].dt.month.values,
+                joined['PromoInterval'].values)
+            assert check_nulls(joined, 'Promo2Active')
 
         ##
         # Numerical feature for PromoInterval
