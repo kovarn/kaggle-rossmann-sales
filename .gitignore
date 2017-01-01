@@ -1,5 +1,5 @@
-# Ignore prefix for all files
-_gi_*
+# Ignore substring for all files
+*_gi_*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -63,8 +63,12 @@ target/
 # Pickle files
 *.pkl
 
+# HDFStore files
+*.h5
+
 # PyCharm
 .idea/
 
 kaggle-rossman-store-sales/
 input/
+output/

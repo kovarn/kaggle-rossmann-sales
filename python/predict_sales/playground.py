@@ -1,13 +1,10 @@
-import pickle
+import logging
 
 import numpy as np
 import pandas as pd
 
 from predict_sales.data import linear_features, xgb_features, log_lm_features
-from predict_sales.functions import remove_before_changepoint, log_transform_train, remove_outliers_lm, select_features, \
-    allow_modifications, log_revert_predicted, exp_rmspe, predict_elasticnet, xgb_expm1_rmspe, predict_xgboost
-
-import logging
+from predict_sales.functions import remove_before_changepoint, remove_outliers_lm, allow_modifications, exp_rmspe, predict_elasticnet, xgb_expm1_rmspe, predict_xgboost
 
 # from predict_sales import logger
 logger = logging.getLogger(__name__)

@@ -2,6 +2,8 @@
 # import pyximport;
 #
 # pyximport.install()
+import warnings
+
 from predict_sales import data_helpers
 import logging
 from collections import OrderedDict, namedtuple
@@ -15,7 +17,7 @@ from tqdm import tqdm
 
 
 # ToDo: Remove this
-REDUCE_DATA = False
+REDUCE_DATA = 5
 SMALL_TRAIN = False
 CYTHON = False
 
@@ -226,27 +228,10 @@ def make_after_stairs(g, *features, days):
 
 ##
 class Data:
-    ##
-    train = None
-    test = None
-    small_train = None
-    small_fold = None
-    one_train = None
-    one_test = None
-
-    @classmethod
-    def save(cls, train_file, test_file):
-        import pickle
-        with open(train_file, mode='wb') as pkl_file:
-            pickle.dump(cls.train, pkl_file)
-            logger.info('Saved train data to {0}'.format(train_file))
-        with open(test_file, mode='wb') as pkl_file:
-            pickle.dump(cls.test, pkl_file)
-            logger.info('Saved test data to {0}'.format(test_file))
 
     ##
     @classmethod
-    def process_input(cls, store_file, train_file, test_file):
+    def process_input(cls, store_file, train_file, test_file, output_file):
         logger.info("Start processing input **************************")
         ##
         store = pd.read_csv(store_file,
@@ -296,7 +281,8 @@ class Data:
 
         #  DayOfWeek: Monday is 0, Sunday is 6
         logger.info("Expand index of each store to cover full date range")
-        train_full = train_csv.groupby('Store').apply(fill_gaps_by_store).reset_index(drop=True)
+        tqdm.pandas(desc="Expand index of stores")
+        train_full = train_csv.groupby('Store').progress_apply(fill_gaps_by_store).reset_index(drop=True)
         assert check_nulls(train_full)
         logger.info("Expanded train data from shape {0} to {1}".format(train_csv.shape, train_full.shape))
         del train_csv
@@ -521,92 +507,95 @@ class Data:
         grouped_by_store = tftc.groupby('Store')
         store.set_index('Store', inplace=True)
 
-        data = pd.HDFStore('data.h5', mode='w')
+        data = pd.HDFStore(output_file, mode='w')
 
-        for s, joined in tqdm(grouped_by_store, desc="Generating features by store"):
-            s = int(s)
-            try:
-                store_details = store.loc[s, :]
-            except KeyError:
-                if REDUCE_DATA:
-                    break
+        with warnings.catch_warnings():
+            # We are working with DataFrame copy in joined. So ignore this warning.
+            warnings.simplefilter(action='ignore', category=pd.core.common.SettingWithCopyWarning)
+            for s, joined in tqdm(grouped_by_store, desc="Generating features by store"):
+                s = int(s)
+                try:
+                    store_details = store.loc[s, :]
+                except KeyError:
+                    if REDUCE_DATA:
+                        break
+                    else:
+                        raise
+                joined['CompetitionOpen'] = (joined['Date']
+                                             >= store_details['CompetitionOpenDate']).astype(int)
+                logger.debug("Store: {: 5d}, Generated Competition Open".format(s))
+                assert check_nulls(joined, 'CompetitionOpen')
+
+                # Binary feature to indicate if Promo2 is active
+                if not CYTHON:
+                    joined['Promo2Active'] = joined['Date'].apply(
+                        partial(is_promo2_active, promo2=store_details['Promo2'],
+                                start_year=store_details['Promo2SinceYear'],
+                                start_week=store_details['Promo2SinceWeek'],
+                                interval=store_details['PromoInterval'])
+                    )
+                    assert check_nulls(joined, 'Promo2Active')
                 else:
-                    raise
-            joined['CompetitionOpen'] = (joined['Date']
-                                         >= store_details['CompetitionOpenDate']).astype(int)
-            logger.debug("Store: {: 5d}, Generated Competition Open".format(s))
-            assert check_nulls(joined, 'CompetitionOpen')
+                    joined['Promo2Active'] = data_helpers.is_promo2_active(
+                        store_details['Promo2'], np.int64(store_details['Promo2SinceYear']),
+                        np.int64(store_details['Promo2SinceWeek']),
+                        joined['Date'].dt.year.values, joined['Date'].dt.week.values, joined['Date'].dt.month.values,
+                        store_details['PromoInterval'])
+                    assert check_nulls(joined, 'Promo2Active')
+                logger.debug("Store: {: 5d}, Generated Promo2 features".format(s))
 
-            # Binary feature to indicate if Promo2 is active
-            if not CYTHON:
-                joined['Promo2Active'] = joined['Date'].apply(
-                    partial(is_promo2_active, promo2=store_details['Promo2'],
-                            start_year=store_details['Promo2SinceYear'],
-                            start_week=store_details['Promo2SinceWeek'],
-                            interval=store_details['PromoInterval'])
-                )
-                assert check_nulls(joined, 'Promo2Active')
-            else:
-                joined['Promo2Active'] = data_helpers.is_promo2_active(
-                    store_details['Promo2'], np.int64(store_details['Promo2SinceYear']),
-                    np.int64(store_details['Promo2SinceWeek']),
-                    joined['Date'].dt.year.values, joined['Date'].dt.week.values, joined['Date'].dt.month.values,
-                    store_details['PromoInterval'])
-                assert check_nulls(joined, 'Promo2Active')
-            logger.debug("Store: {: 5d}, Generated Promo2 features".format(s))
+                joined = merge_with_fourier_features(joined)
+                logger.debug("Store: {: 5d}, Fourier features, new shape {shape}".format(s, shape=joined.shape))
+                joined = date_features(joined)
+                logger.debug("Store: {: 5d}, Date features, new shape {shape}".format(s, shape=joined.shape))
 
-            joined = merge_with_fourier_features(joined)
-            logger.debug("Store: {: 5d}, Fourier features, new shape {shape}".format(s, shape=joined.shape))
-            joined = date_features(joined)
-            logger.debug("Store: {: 5d}, Date features, new shape {shape}".format(s, shape=joined.shape))
+                old_shape = joined.shape
+                make_decay_features(joined, promo_after=4, promo2_after=3,
+                                    holiday_b_before=3, holiday_c_before=15, holiday_c_after=3)
+                logger.debug("Store: {: 5d}, Decay features, new shape {shape}".format(s, shape=joined.shape))
+                assert joined.shape[0] == old_shape[0] and joined.shape[1] > old_shape[1]
 
-            old_shape = joined.shape
-            make_decay_features(joined, promo_after=4, promo2_after=3,
-                                holiday_b_before=3, holiday_c_before=15, holiday_c_after=3)
-            logger.debug("Store: {: 5d}, Decay features, new shape {shape}".format(s, shape=joined.shape))
-            assert joined.shape[0] == old_shape[0] and joined.shape[1] > old_shape[1]
+                old_shape = joined.shape
+                scale_log_features(joined, *decay_features, 'DateTrend')
+                logger.debug("Store: {: 5d}, Scale log features, new shape {shape}".format(s, shape=joined.shape))
+                assert joined.shape[0] == old_shape[0] and joined.shape[1] > old_shape[1]
 
-            old_shape = joined.shape
-            scale_log_features(joined, *decay_features, 'DateTrend')
-            logger.debug("Store: {: 5d}, Scale log features, new shape {shape}".format(s, shape=joined.shape))
-            assert joined.shape[0] == old_shape[0] and joined.shape[1] > old_shape[1]
+                old_shape = joined.shape
+                make_before_stairs(joined, "StateHolidayCNextDate", "StateHolidayBNextDate",
+                                   "StateHolidayANextDate", "LongClosedNextDate",
+                                   days=stairs_steps)
+                logger.debug("Store: {: 5d}, Before stairs features, new shape {shape}".format(s, shape=joined.shape))
+                assert joined.shape[0] == old_shape[0] and joined.shape[1] > old_shape[1]
 
-            old_shape = joined.shape
-            make_before_stairs(joined, "StateHolidayCNextDate", "StateHolidayBNextDate",
-                               "StateHolidayANextDate", "LongClosedNextDate",
-                               days=stairs_steps)
-            logger.debug("Store: {: 5d}, Before stairs features, new shape {shape}".format(s, shape=joined.shape))
-            assert joined.shape[0] == old_shape[0] and joined.shape[1] > old_shape[1]
+                old_shape = joined.shape
+                make_after_stairs(joined, "PromoStartedLastDate", days=(2, 3, 4))
+                make_after_stairs(joined, "StateHolidayCLastDate", "StateHolidayBLastDate",
+                                  "Promo2StartedDate", "LongOpenLastDate",
+                                  days=stairs_steps)
+                logger.debug("Store: {: 5d}, After stairs features, new shape {shape}".format(s, shape=joined.shape))
+                assert joined.shape[0] == old_shape[0] and joined.shape[1] > old_shape[1]
 
-            old_shape = joined.shape
-            make_after_stairs(joined, "PromoStartedLastDate", days=(2, 3, 4))
-            make_after_stairs(joined, "StateHolidayCLastDate", "StateHolidayBLastDate",
-                              "Promo2StartedDate", "LongOpenLastDate",
-                              days=stairs_steps)
-            logger.debug("Store: {: 5d}, After stairs features, new shape {shape}".format(s, shape=joined.shape))
-            assert joined.shape[0] == old_shape[0] and joined.shape[1] > old_shape[1]
+                check_nulls(joined, 'Promo2Decay')
 
-            check_nulls(joined, 'Promo2Decay')
+                store_train_idx = joined.index.intersection(train_idx)
 
-            store_train_idx = joined.index.intersection(train_idx)
+                store_test_idx = joined.index.difference(train_idx)
 
-            store_test_idx = joined.index.difference(train_idx)
+                assert len(store_train_idx) + len(store_test_idx) == joined.shape[0]
 
-            assert len(store_train_idx) + len(store_test_idx) == joined.shape[0]
+                train = joined.loc[store_train_idx, :]
+                data.append('train', train, data_columns=['Store', 'Date', 'Sales'])
+                logger.debug("Store: {: 5d}, Wrote train data, shape {shape}".format(s, shape=train.shape))
 
-            train = joined.loc[store_train_idx, :]
-            data.append('train', train, data_columns=['Store', 'Date', 'Sales'])
-            logger.debug("Store: {: 5d}, Wrote train data, shape {shape}".format(s, shape=train.shape))
-
-            test = joined.loc[store_test_idx, :]
-            data.append('test', test, data_columns=['Store', 'Date', 'Sales', 'Open'])
-            logger.debug("Store: {: 5d}, Wrote test data, shape {shape}".format(s, shape=test.shape))
+                test = joined.loc[store_test_idx, :]
+                data.append('test', test, data_columns=['Store', 'Date', 'Sales', 'Open'])
+                logger.debug("Store: {: 5d}, Wrote test data, shape {shape}".format(s, shape=test.shape))
 
         store.drop('PromoInterval', axis=1, inplace=True)
         logger.debug('Removed PromoInterval from store')
 
         data.put('store', store)
-        logger.info('Wrote data to file data.h5')
+        logger.info('Wrote data to file {}'.format(output_file))
         logger.info(repr(data))
         data.close()
 
@@ -638,5 +627,6 @@ def make_fold(train, date, step, predict_interval, step_by):
 if __name__ == '__main__':
     ##
     store_file, train_file, test_file = "../input/store.csv", "../input/train.csv", "../input/test.csv"
+    output_file = "../output/data.h5"
     ##
-    Data.process_input(store_file, train_file, test_file)
+    Data.process_input(store_file, train_file, test_file, output_file)
