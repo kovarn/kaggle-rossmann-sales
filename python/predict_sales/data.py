@@ -1,6 +1,8 @@
 ##
-import pyximport; pyximport.install()
-from . import data_helpers
+# import pyximport;
+#
+# pyximport.install()
+from predict_sales import data_helpers
 import logging
 from collections import OrderedDict, namedtuple
 from functools import partial
@@ -9,15 +11,20 @@ from itertools import product, chain, starmap
 import numpy as np
 import pandas as pd
 
+from tqdm import tqdm
+
+
 # ToDo: Remove this
 REDUCE_DATA = False
 SMALL_TRAIN = False
-CYTHON = True
+CYTHON = False
 
 logger = logging.getLogger(__name__)
+# from predict_sales import logger
 logger.info("Module loaded")
 
 pd.set_option('float_format', "{0:.2f}".format)
+pd.set_option('io.hdf.default_format','table')
 
 ##
 # md
@@ -157,29 +164,15 @@ def month_to_nums(months):
         return month_to_nums_dict[months]
 
 
-# 'Promo2', 'Promo2SinceYear', 'Promo2SinceWeek', 'PromoInterval', 'Date'
-def is_promo2_active(row):
-    if row[0]:
-        start_year = row[1]
-        start_week = row[2]
-        interval = row[3]
-        date = row[4]
-        if ((date.year > start_year)
-            or ((date.year == start_year) and (date.week >= start_week))):
-            if date.month in interval:
-                return 1
-    return 0
+# 'Date', 'Promo2', 'Promo2SinceYear', 'Promo2SinceWeek', 'PromoInterval'
 
-def is_promo2_active2(row):
-    start_year = row[1]
-    start_week = row[2]
-    interval = row[3]
-    date = row[4]
+def is_promo2_active(date, promo2, start_year, start_week, interval):
     if ((date.year > start_year)
-        or ((date.year == start_year) and (date.week >= start_week))):
+            or ((date.year == start_year) and (date.week >= start_week))):
         if date.month in interval:
             return 1
     return 0
+
 
 ##
 def make_decay_features(g, promo_after, promo2_after, holiday_b_before,
@@ -190,9 +183,9 @@ def make_decay_features(g, promo_after, promo2_after, holiday_b_before,
     g['StateHolidayCLastDecay'] = (1 - g['StateHolidayC']) * np.maximum(
         holiday_c_after - (g['Date'] - g['StateHolidayCLastDate']).dt.days
         , 0)
-    g['Promo2Decay'] = g['Promo2Active'] * np.maximum(
+    g['Promo2Decay'] = (g['Promo2Active'] * np.maximum(
         promo2_after - (g['Date'] - g['Promo2StartedDate']).dt.days
-        , 0)
+        , 0)).astype(float)
     g['StateHolidayBNextDecay'] = (1 - g['StateHolidayB']) * np.maximum(
         holiday_b_before - (g['StateHolidayBNextDate'] - g['Date']).dt.days
         , 0)
@@ -200,13 +193,17 @@ def make_decay_features(g, promo_after, promo2_after, holiday_b_before,
         holiday_c_before - (g['StateHolidayCNextDate'] - g['Date']).dt.days
         , 0)
 
+    assert check_nulls(g, 'Promo2Decay')
+
 
 ##
 def scale_log_features(g, *features):
     for f in features:
-        g[f] /= g[f].max()
+        if g[f].max() > 0:
+            g[f] /= g[f].max()
         g["{0}Log".format(f)] = np.log1p(g[f])
-        g["{0}Log".format(f)] /= g["{0}Log".format(f)].max()
+        if g["{0}Log".format(f)].max() > 0:
+            g["{0}Log".format(f)] /= g["{0}Log".format(f)].max()
 
 
 ##
@@ -266,7 +263,7 @@ class Data:
             logger.info("Store data reduced to {0} rows".format(store.shape[0]))
 
         ##
-        train_csv = pd.read_csv(train_file, dtype={'StateHoliday': 'str'}, parse_dates=['Date'])
+        train_csv = pd.read_csv(train_file, dtype={'StateHoliday': 'str', 'Store': int}, parse_dates=['Date'])
         logger.info("Read train data: {0} rows, {1} columns".format(*train_csv.shape))
 
         ##
@@ -306,7 +303,7 @@ class Data:
         # gc.collect()
 
         ##
-        test_csv = pd.read_csv(test_file, dtype={'StateHoliday': 'str'}, parse_dates=['Date'])
+        test_csv = pd.read_csv(test_file, dtype={'StateHoliday': 'str', 'Store': int}, parse_dates=['Date'])
         logger.info("Read test data: {0} rows, {1} columns".format(*test_csv.shape))
 
         ##
@@ -338,106 +335,85 @@ class Data:
 
         ##
         # Combine data
-        tftc = pd.concat([train_full, test_csv])
+        test_csv.set_index('Id', inplace=True)
+        logger.info('Changed index to Id for test set, shape {}'.format(test_csv.shape))
+
+        ##
+        train_start = test_csv.index.max() + 1
+        train_idx = pd.RangeIndex(train_start, train_start + train_full.shape[0])
+        train_full.index = train_idx
+        train_full.index.name = 'Id'
+
+        ##
+        tftc = pd.concat([train_full, test_csv])  # type: pd.DataFrame
         logger.info(
             "Combined train and test data. Train data shape {0}. Test data shape {1}. Combined data shape {2}".format(
                 train_full.shape, test_csv.shape, tftc.shape
             ))
         del test_csv
-
-        joined = pd.merge(tftc, store, on='Store', how='inner')
-        logger.info("Merged with store data, shape {0}".format(joined.shape))
-
-        del store, tftc
-        # gc.collect()
+        assert len(tftc.index) == len(set(tftc.index))
+        assert tftc.index.name == 'Id'
 
         ##
         # Add binary feature for each day of week.
         # ToDo: add term for Sunday.
         for i in range(1, 7):
-            joined['DayOfWeek{i}'.format(i=i)] = (joined['DayOfWeek'] == i).astype(int)
-            assert check_nulls(joined, 'DayOfWeek{i}'.format(i=i))
+            tftc['DayOfWeek{i}'.format(i=i)] = (tftc['DayOfWeek'] == i).astype(int)
+            assert check_nulls(tftc, 'DayOfWeek{i}'.format(i=i))
         logger.info("Generated Day of Week features")
 
         ##
         # Add binary features for StateHoliday categories, and one numerical feature
         for i in 'ABC':
-            joined['StateHoliday{i}'.format(i=i)] = (joined['StateHoliday'] == i.lower()).astype(int)
-            assert check_nulls(joined, 'StateHoliday{i}'.format(i=i))
+            tftc['StateHoliday{i}'.format(i=i)] = (tftc['StateHoliday'] == i.lower()).astype(int)
+            assert check_nulls(tftc, 'StateHoliday{i}'.format(i=i))
 
         letter_to_number = {'0': 1, 'a': 2, 'b': 3, 'c': 4}
 
-        joined['StateHolidayN'] = joined['StateHoliday'].replace(letter_to_number)
-        assert check_nulls(joined, 'StateHolidayN')
+        tftc['StateHolidayN'] = tftc['StateHoliday'].replace(letter_to_number)
+        assert check_nulls(tftc, 'StateHolidayN')
         logger.info("Generated State Holiday features")
-
-        ##
-        joined['CompetitionOpen'] = (joined['Date']
-                                     >= joined['CompetitionOpenDate']).astype(int)
-        assert check_nulls(joined, 'CompetitionOpen')
-        logger.info("Generated Competition Open")
 
         ##
         letter_to_number = {'a': 1, 'b': 2, 'c': 3, 'd': 4}
 
-        joined['StoreTypeN'] = joined['StoreType'].replace(letter_to_number)
-        joined['AssortmentN'] = joined['Assortment'].replace(letter_to_number)
-        assert check_nulls(joined, 'StoreTypeN')
-        assert check_nulls(joined, 'AssortmentN')
+        store['StoreTypeN'] = store['StoreType'].replace(letter_to_number)
+        store['AssortmentN'] = store['Assortment'].replace(letter_to_number)
+        assert check_nulls(store, 'StoreTypeN')
+        assert check_nulls(store, 'AssortmentN')
         logger.info("Generated Store Type")
 
         ##
         # Represent date offsets
-        joined['DateTrend'] = ((joined['Date'] - joined['Date'].min())
-                               .apply(lambda s: s.days + 1))
-        assert check_nulls(joined, 'DateTrend')
+        tftc['DateTrend'] = (tftc['Date'] - tftc['Date'].min()).dt.days
+        assert check_nulls(tftc, 'DateTrend')
         logger.info("Generated Date Trend")
 
         ##
-        # Binary feature to indicate if Promo2 is active
-        if not CYTHON:
-            joined['Promo2Active'] = joined[['Promo2', 'Promo2SinceYear',
-                                             'Promo2SinceWeek', 'PromoInterval',
-                                             'Date']].apply(is_promo2_active, axis=1)
-            assert check_nulls(joined, 'Promo2Active')
-        else:
-            joined['Promo2Active'] = data_helpers.is_promo2_active_cython(
-                joined['Promo2'].values, joined['Promo2SinceYear'].values.astype(np.int64),
-                joined['Promo2SinceWeek'].values.astype(np.int64),
-                joined['Date'].dt.year.values, joined['Date'].dt.week.values, joined['Date'].dt.month.values,
-                joined['PromoInterval'].values)
-            assert check_nulls(joined, 'Promo2Active')
-
-        ##
-        # Numerical feature for PromoInterval
-        # month_to_nums = {'Jan,Apr,Jul,Oct': 3,
-        #                  'Feb,May,Aug,Nov': 2,
-        #                  'Mar,Jun,Sept,Dec': 4}
-
-        joined['PromoIntervalN'] = (joined['PromoInterval']
-                                    .apply(lambda s: 1 if pd.isnull(s) else min(s) + 1))
-        assert check_nulls(joined, 'PromoIntervalN')
-        logger.info("Generated Promo2 features")
+        store['PromoIntervalN'] = (store['PromoInterval']
+                                   .apply(lambda s: 1 if pd.isnull(s) else min(s) + 1))
+        assert check_nulls(store, 'PromoIntervalN')
+        logger.info("Generated PromoInterval features")
 
         ##
         # Day, month, year
-        joined['MDay'] = joined['Date'].dt.day
-        joined['Month'] = joined['Date'].dt.month
-        joined['Year'] = joined['Date'].dt.year
+        tftc['MDay'] = tftc['Date'].dt.day
+        tftc['Month'] = tftc['Date'].dt.month
+        tftc['Year'] = tftc['Date'].dt.year
 
         ##
         # Binary feature for day
         for i in range(1, 32):
-            joined['MDay{i}'.format(i=i)] = (joined['MDay'] == i).astype(int)
+            tftc['MDay{i}'.format(i=i)] = (tftc['MDay'] == i).astype(int)
 
         ##
         # Binary feature for month
         for i in range(1, 13):
-            joined['Month{i}'.format(i=i)] = (joined['Month'] == i).astype(int)
+            tftc['Month{i}'.format(i=i)] = (tftc['Month'] == i).astype(int)
 
         logger.info("Generated date related feature")
 
-        logger.info("Generated direct features, new shape {0}".format(joined.shape))
+        logger.info("Generated direct features, new shape {0}".format(tftc.shape))
 
         ##
         # Apply transformations grouped by Store
@@ -454,7 +430,7 @@ class Data:
         ##
         # Merge fourier features
         def merge_with_fourier_features(g):
-            return pd.merge(g, fourier_features, on='Date')
+            return pd.merge(g.reset_index(), fourier_features, on='Date', sort=True).set_index('Id')
 
         ##
         def date_features(g):
@@ -542,64 +518,97 @@ class Data:
             return g
 
         ##
-        joined = joined.groupby('Store').apply(apply_grouped_by_store)
-        logger.info('Expanded with date and fourier features shape {0}'.format(joined.shape))
+        grouped_by_store = tftc.groupby('Store')
+        store.set_index('Store', inplace=True)
 
-        ##
-        old_shape = joined.shape
-        make_decay_features(joined, promo_after=4, promo2_after=3,
-                            holiday_b_before=3, holiday_c_before=15, holiday_c_after=3)
-        logger.info("Decay features, new shape {shape}".format(shape=joined.shape))
-        assert joined.shape[0] == old_shape[0] and joined.shape[1] > old_shape[1]
+        data = pd.HDFStore('data.h5', mode='w')
 
-        ##
-        old_shape = joined.shape
-        scale_log_features(joined, *decay_features, 'DateTrend')
-        logger.info("Scale log features, new shape {shape}".format(shape=joined.shape))
-        assert joined.shape[0] == old_shape[0] and joined.shape[1] > old_shape[1]
+        for s, joined in tqdm(grouped_by_store, desc="Generating features by store"):
+            s = int(s)
+            try:
+                store_details = store.loc[s, :]
+            except KeyError:
+                if REDUCE_DATA:
+                    break
+                else:
+                    raise
+            joined['CompetitionOpen'] = (joined['Date']
+                                         >= store_details['CompetitionOpenDate']).astype(int)
+            logger.debug("Store: {: 5d}, Generated Competition Open".format(s))
+            assert check_nulls(joined, 'CompetitionOpen')
 
-        ##
-        old_shape = joined.shape
-        make_before_stairs(joined, "StateHolidayCNextDate", "StateHolidayBNextDate",
-                           "StateHolidayANextDate", "LongClosedNextDate",
-                           days=stairs_steps)
-        logger.info("Before stairs features, new shape {shape}".format(shape=joined.shape))
-        assert joined.shape[0] == old_shape[0] and joined.shape[1] > old_shape[1]
+            # Binary feature to indicate if Promo2 is active
+            if not CYTHON:
+                joined['Promo2Active'] = joined['Date'].apply(
+                    partial(is_promo2_active, promo2=store_details['Promo2'],
+                            start_year=store_details['Promo2SinceYear'],
+                            start_week=store_details['Promo2SinceWeek'],
+                            interval=store_details['PromoInterval'])
+                )
+                assert check_nulls(joined, 'Promo2Active')
+            else:
+                joined['Promo2Active'] = data_helpers.is_promo2_active(
+                    store_details['Promo2'], np.int64(store_details['Promo2SinceYear']),
+                    np.int64(store_details['Promo2SinceWeek']),
+                    joined['Date'].dt.year.values, joined['Date'].dt.week.values, joined['Date'].dt.month.values,
+                    store_details['PromoInterval'])
+                assert check_nulls(joined, 'Promo2Active')
+            logger.debug("Store: {: 5d}, Generated Promo2 features".format(s))
 
-        ##
-        old_shape = joined.shape
-        make_after_stairs(joined, "PromoStartedLastDate", days=(2, 3, 4))
-        make_after_stairs(joined, "StateHolidayCLastDate", "StateHolidayBLastDate",
-                          "Promo2StartedDate", "LongOpenLastDate",
-                          days=stairs_steps)
-        logger.info("After stairs features, new shape {shape}".format(shape=joined.shape))
-        assert joined.shape[0] == old_shape[0] and joined.shape[1] > old_shape[1]
+            joined = merge_with_fourier_features(joined)
+            logger.debug("Store: {: 5d}, Fourier features, new shape {shape}".format(s, shape=joined.shape))
+            joined = date_features(joined)
+            logger.debug("Store: {: 5d}, Date features, new shape {shape}".format(s, shape=joined.shape))
 
-        ##
-        logger.info("Splitting data into train and test, initial shape {shape}".format(shape=joined.shape))
-        d1, d2 = train_range_lims
-        cls.train = joined.query('@d1 <= Date <= @d2').drop('Id', axis=1)
-        logger.info("Train data shape {shape}".format(shape=cls.train.shape))
+            old_shape = joined.shape
+            make_decay_features(joined, promo_after=4, promo2_after=3,
+                                holiday_b_before=3, holiday_c_before=15, holiday_c_after=3)
+            logger.debug("Store: {: 5d}, Decay features, new shape {shape}".format(s, shape=joined.shape))
+            assert joined.shape[0] == old_shape[0] and joined.shape[1] > old_shape[1]
 
-        ##
-        d1, d2 = test_range_lims
-        cls.test = joined.query('@d1 <= Date <= @d2').drop(['Sales', 'Customers'], axis=1)
-        logger.info("Test data shape {shape}".format(shape=cls.test.shape))
+            old_shape = joined.shape
+            scale_log_features(joined, *decay_features, 'DateTrend')
+            logger.debug("Store: {: 5d}, Scale log features, new shape {shape}".format(s, shape=joined.shape))
+            assert joined.shape[0] == old_shape[0] and joined.shape[1] > old_shape[1]
 
-        ##
-        if SMALL_TRAIN:
-            cls.small_train = cls.train[cls.train['Store'].apply(lambda s: s in example_stores)]
-            logger.info("Small train shape {0}".format(cls.small_train.shape))
+            old_shape = joined.shape
+            make_before_stairs(joined, "StateHolidayCNextDate", "StateHolidayBNextDate",
+                               "StateHolidayANextDate", "LongClosedNextDate",
+                               days=stairs_steps)
+            logger.debug("Store: {: 5d}, Before stairs features, new shape {shape}".format(s, shape=joined.shape))
+            assert joined.shape[0] == old_shape[0] and joined.shape[1] > old_shape[1]
 
-            cls.small_fold = make_fold(cls.small_train)
-            logger.info("Small fold shapes, train: {0}, test:{1}, actual:{2}"
-                        .format(cls.small_fold.train.shape, cls.small_fold.test.shape, cls.small_fold.actual.shape))
+            old_shape = joined.shape
+            make_after_stairs(joined, "PromoStartedLastDate", days=(2, 3, 4))
+            make_after_stairs(joined, "StateHolidayCLastDate", "StateHolidayBLastDate",
+                              "Promo2StartedDate", "LongOpenLastDate",
+                              days=stairs_steps)
+            logger.debug("Store: {: 5d}, After stairs features, new shape {shape}".format(s, shape=joined.shape))
+            assert joined.shape[0] == old_shape[0] and joined.shape[1] > old_shape[1]
 
-            cls.one_train = cls.train[cls.train['Store'] == 388]
-            cls.one_test = cls.test[cls.test['Store'] == 388]
+            check_nulls(joined, 'Promo2Decay')
 
-            logger.info("One train shape {0}, one test shape {1}".format(cls.one_train.shape, cls.one_test.shape))
+            store_train_idx = joined.index.intersection(train_idx)
 
+            store_test_idx = joined.index.difference(train_idx)
+
+            assert len(store_train_idx) + len(store_test_idx) == joined.shape[0]
+
+            train = joined.loc[store_train_idx, :]
+            data.append('train', train, data_columns=['Store', 'Date', 'Sales'])
+            logger.debug("Store: {: 5d}, Wrote train data, shape {shape}".format(s, shape=train.shape))
+
+            test = joined.loc[store_test_idx, :]
+            data.append('test', test, data_columns=['Store', 'Date', 'Sales', 'Open'])
+            logger.debug("Store: {: 5d}, Wrote test data, shape {shape}".format(s, shape=test.shape))
+
+        store.drop('PromoInterval', axis=1, inplace=True)
+        logger.debug('Removed PromoInterval from store')
+
+        data.put('store', store)
+        logger.info('Wrote data to file data.h5')
+        logger.info(repr(data))
+        data.close()
 
 ##
 example_stores = (
@@ -611,18 +620,17 @@ example_stores = (
 
 
 ##
-def make_fold(train, step, predict_interval, step_by):
+def make_fold(train, date, step, predict_interval, step_by):
     cross_val_fold = namedtuple('cross_val_fold', 'train_idx test_idx')
     train = train.reset_index(drop=True)
-    dates = pd.date_range(train['Date'].min(), train['Date'].max())
+    dates = pd.date_range(date.min(), date.max())
     total = dates.shape[0]
     last_train = total - predict_interval - (step - 1) * step_by
     last_train_date = dates[last_train - 1]
     last_predict = last_train + predict_interval
     last_predict_date = dates[last_predict - 1]
-    train_idx = train.index[train['Date'] <= last_train_date]
-    test_idx = train.index[(train['Date'] > last_train_date) & (train['Date'] <=
-                                                                last_predict_date)]
+    train_idx = train.index[date <= last_train_date]
+    test_idx = train.index[(date > last_train_date) & (date <= last_predict_date)]
     return cross_val_fold(train_idx=train_idx, test_idx=test_idx)
 
 
