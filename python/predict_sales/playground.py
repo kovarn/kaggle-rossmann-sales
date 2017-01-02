@@ -4,16 +4,17 @@ import numpy as np
 import pandas as pd
 
 from predict_sales.data import linear_features, xgb_features, log_lm_features
-from predict_sales.functions import remove_before_changepoint, remove_outliers_lm, allow_modifications, exp_rmspe, predict_elasticnet, xgb_expm1_rmspe, predict_xgboost
+from predict_sales.functions import remove_before_changepoint, remove_outliers_lm, exp_rmspe, predict_elasticnet, \
+    xgb_expm1_rmspe, predict_xgboost
 
 # from predict_sales import logger
 logger = logging.getLogger(__name__)
-pd.set_option('io.hdf.default_format','table')
+pd.set_option('io.hdf.default_format', 'table')
 
 
 ##
-@allow_modifications(True)
 def glm_predictions(data: pd.HDFStore, output: pd.HDFStore):
+
     ##
     logger.info("Dropping store data before changepoint.")
     select_idx = remove_before_changepoint(data, None)
@@ -39,8 +40,9 @@ def glm_predictions(data: pd.HDFStore, output: pd.HDFStore):
 
     ##
     logger.info("Running elasticnet predictions")
-    predict_elasticnet(data, output, select_idx, linear_features, test_set_stores,
-                                           exp_rmspe, steps=15, step_by=3)
+    predict_elasticnet(data, output, select_idx, linear_features, test_set_stores, with_cv=False,
+                       eval_function=exp_rmspe, steps=15, step_by=3)
+
 
 ##
 xparams = dict(
@@ -59,7 +61,6 @@ nrounds = 3000
 
 
 ##
-@allow_modifications(False)
 def xgb_predictions(data: pd.HDFStore, output: pd.HDFStore):
     ##
     logger.info("Dropping store data before changepoint.")
@@ -83,7 +84,7 @@ def xgb_predictions(data: pd.HDFStore, output: pd.HDFStore):
     ##
     logger.info("Running xgboost predictions")
     predict_xgboost(data, output, select_idx, xgb_features, xgb_expm1_rmspe,
-                                     params=xparams, nrounds=nrounds)
+                    params=xparams, nrounds=nrounds)
 
 
 ##

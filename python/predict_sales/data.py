@@ -22,7 +22,7 @@ SMALL_TRAIN = False
 CYTHON = False
 
 logger = logging.getLogger(__name__)
-# from predict_sales import logger
+# +- from predict_sales import logger
 logger.info("Module loaded")
 
 pd.set_option('float_format', "{0:.2f}".format)
@@ -233,6 +233,9 @@ class Data:
     @classmethod
     def process_input(cls, store_file, train_file, test_file, output_file):
         logger.info("Start processing input **************************")
+        ##
+        # ++ store_file, train_file, test_file = "input/store.csv", "input/train.csv", "input/test.csv"
+        # ++ output_file = "output/data.h5"
         ##
         store = pd.read_csv(store_file,
                             parse_dates={

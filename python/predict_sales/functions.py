@@ -17,46 +17,7 @@ from tqdm import tqdm
 logger = logging.getLogger(__name__)
 logger.info("Module loaded")
 
-WRAP = False
-logger.info('Wrapping all functions to check df modifications' if WRAP else 'Wrapping disabled')
 
-
-def allow_modifications(allow):
-    def decorate(func):
-        if not WRAP:
-            return func
-
-        func_name = func.__name__
-
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            dfs_with_copy = [(df, df.copy()) for df in args if isinstance(df, pd.DataFrame)]
-            return_val = func(*args, **kwargs)
-            modified = False
-            for df, df_copy in dfs_with_copy:
-                if not df.equals(df_copy):
-                    modified = True
-                    break
-            try:
-                assert (allow and modified) or (not allow and not modified)
-            except AssertionError:
-                if allow:
-                    logger.warning('{f} does not modify dataframe!'.format(f=func_name))
-                else:
-                    logger.warning('{f} is modifying dataframe!'.format(f=func_name))
-            else:
-                if not allow:
-                    logger.debug('{f} does not modify dataframe'.format(f=func_name))
-                else:
-                    logger.debug('{f} is modifying dataframe'.format(f=func_name))
-            return return_val
-
-        return wrapper
-
-    return decorate
-
-
-@allow_modifications(True)
 def remove_before_changepoint(data: pd.HDFStore, select_idx: pd.Index = None):
     changepoints = {837: '2014-03-16',
                     700: '2014-01-03',
@@ -80,13 +41,11 @@ def remove_before_changepoint(data: pd.HDFStore, select_idx: pd.Index = None):
     return select_idx
 
 
-@allow_modifications(True)
 def log_transform_train(train):
     train.query('Sales > 0', inplace=True)
     train['Sales'] = np.log(train['Sales'])
 
 
-@allow_modifications(False)
 def select_features_copy(train, features):
     base_columns = [c for c in ['Sales', 'Id', 'Store', 'Date']
                     if c in train.columns and c not in features]
@@ -94,7 +53,6 @@ def select_features_copy(train, features):
     return train[columns_to_select]
 
 
-@allow_modifications(True)
 def select_features_inplace(train, features):
     base_columns = [c for c in ['Sales', 'Id', 'Store', 'Date']
                     if c in train.columns and c not in features]
@@ -110,7 +68,6 @@ def select_features(train, features, inplace=False):
         return select_features_copy(train, features)
 
 
-@allow_modifications(True)
 def remove_outliers_lm(data: pd.HDFStore, select_idx: pd.Index, features, stores,
                        z_score=2.5):
     # logger.info("{f} train shape {tr}".format(f=remove_outliers_lm.__name__, tr=train.shape))
@@ -139,7 +96,6 @@ def remove_outliers_lm(data: pd.HDFStore, select_idx: pd.Index, features, stores
     return new_select_idx
 
 
-@allow_modifications(True)
 def predict_lm_per_store(data: pd.HDFStore, select_idx: pd.Index, features, sales, save_fit=False):
     store_train = data.select('train', select_idx, columns=list(features)).set_index(select_idx)
     assert store_train.shape == (len(select_idx), len(features))
@@ -159,9 +115,9 @@ def cv_generator(train, date, steps, predict_interval, step_by):
                         predict_interval=predict_interval, step_by=step_by)
 
 
-def predict_elasticnet_per_store(data: pd.HDFStore, train_select_idx: pd.Index, test_select_idx: pd.Index, features,
-                                 sales,
-                                 store, with_cv=False, eval_function=None, steps=13,
+def predict_elasticnet_per_store(data: pd.HDFStore, train_select_idx: pd.Index, test_select_idx: pd.Index,
+                                 features, sales, store,
+                                 with_cv=False, eval_function=None, steps=13,
                                  predict_interval=6 * 7, step_by=7,
                                  l1_ratio=[.99, 1], family="gaussian", n_alphas=100):
     store_train = data.select('train', train_select_idx, columns=list(features)).set_index(train_select_idx)
@@ -169,18 +125,20 @@ def predict_elasticnet_per_store(data: pd.HDFStore, train_select_idx: pd.Index, 
 
     assert date.shape[0] == store_train.shape[0]
     assert store_train.shape == (len(train_select_idx), len(features))
-    logger.debug('Store train shape {}'.format(store_train.shape))
-    logger.debug('Sales shape {}'.format(sales.shape))
+    logger.debug('Store {0:4d}: train shape {1}, sales shape{2}'
+                 .format(int(store), store_train.shape, sales.shape))
+    logger.debug(store_train.values.flags)
 
     cv = list(cv_generator(store_train, date, steps, predict_interval=predict_interval, step_by=step_by))
-    en = linear_model.ElasticNetCV(l1_ratio=l1_ratio, n_alphas=n_alphas, cv=cv)
+    en = linear_model.ElasticNetCV(l1_ratio=l1_ratio, n_alphas=n_alphas, cv=cv,
+                                   n_jobs=-1, selection='random')
 
     fit = en.fit(store_train, sales)
 
-    logger.debug('alpha: {alpha}, l1 ratio: {l1_ratio}'
-                 .format(alpha=fit.alpha_, l1_ratio=fit.l1_ratio_))
+    logger.debug('Store {0:4d}: alpha {alpha}, l1 ratio {l1_ratio}'
+                 .format(int(store), alpha=fit.alpha_, l1_ratio=fit.l1_ratio_))
+    # logger.debug('Store {0:4d}: MSE path {1}'.format(int(store), fit.mse_path_))
 
-    cv_median_error = None
     if with_cv:
         cv_errors = []
         for fold in cv:
@@ -219,16 +177,29 @@ def predict_elasticnet_per_store(data: pd.HDFStore, train_select_idx: pd.Index, 
     # # store_test.columns = ['Id', 'PredictedSales']
 
 
-@allow_modifications(False)
+# class GLMPredictions:
+#     def __init__(self, data_filename=None):
+#         data_filename = data_filename
+#         select_idx = None
+#         train_key = 'train'
+#         label_key = 'train_logsales'
+#         stores = None
+#         features = None
+#         steps = None
+#         step_by = None
+#         predict_interval = None
+#         l1_ratio = None
+#         n_alphas = None
+
+
 def predict_elasticnet(data: pd.HDFStore, output: pd.HDFStore, select_idx: pd.Index, features, stores,
                        with_cv=False, eval_function=None, steps=13,
                        predict_interval=6 * 7, step_by=7,
-                       l1_ratio=[.99, 1], family="gaussian",
+                       l1_ratio=[.1, .5, .7, .9, .95, .99, 1], family="gaussian",
                        n_alphas=100):
     logger.info("glm predictions. Reading data from {0}".format(data.filename))
     assert family in ("gaussian", "poisson")
 
-    @allow_modifications(True)
     def per_store():
         for store in tqdm(stores, desc="GLM predictions"):
             logger.debug("Store {}".format(store))
@@ -238,7 +209,11 @@ def predict_elasticnet(data: pd.HDFStore, output: pd.HDFStore, select_idx: pd.In
             sales = data.select('train_logsales', store_train_idx).set_index(store_train_idx)['Sales']
             assert sales.shape == (len(store_train_idx),)
 
-            yield predict_elasticnet_per_store(data, store_train_idx, store_test_idx, features, sales, store)
+            yield predict_elasticnet_per_store(data, store_train_idx, store_test_idx,
+                                               features, sales, store,
+                                               with_cv=with_cv, eval_function=eval_function, steps=steps,
+                                               predict_interval=predict_interval, step_by=step_by,
+                                               l1_ratio=l1_ratio, family=family, n_alphas=n_alphas)
 
     try:
         output.remove('glm_predictions')
@@ -254,8 +229,18 @@ def predict_elasticnet(data: pd.HDFStore, output: pd.HDFStore, select_idx: pd.In
     result = output.get_storer('glm_predictions')
     logger.info('Wrote predictions, shape{0} to {1}'.format((result.nrows, result.ncols), output.filename))
 
+    # preds = GLMPredictions(data_filename=data.filename)
+    # preds.stores = stores
+    # preds.select_idx = select_idx
+    # preds.output_filename = output.filename
+    # preds.features = features
+    # preds.steps = steps
+    # preds.step_by = step_by
+    # preds.predict_interval = predict_interval
+    # preds.l1_ratio = l1_ratio
+    # preds.n_alphas = n_alphas
 
-@allow_modifications(False)
+
 def predict_xgboost(data: pd.HDFStore, output: pd.HDFStore, select_idx: pd.Index, features, eval_function, params,
                     nrounds):
     logger.info("xgboost predictions. Reading data from {0}".format(data.filename))
