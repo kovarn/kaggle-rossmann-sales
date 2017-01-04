@@ -1,20 +1,32 @@
 import logging
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from predict_sales.data import linear_features, xgb_features, log_lm_features
-from predict_sales.functions import remove_before_changepoint, remove_outliers_lm, exp_rmspe, predict_elasticnet, \
-    xgb_expm1_rmspe, predict_xgboost
+from predict_sales.functions import remove_before_changepoint, remove_outliers_lm, xgb_expm1_rmspe, predict_xgboost, \
+    GLMPredictions
+from predict_sales.utils.warnings_ import set_warnings_handlers_from, warnings_to_log
 
-# from predict_sales import logger
 logger = logging.getLogger(__name__)
+# +-from predict_sales import logger
+
+set_warnings_handlers_from(logger)
+
 pd.set_option('io.hdf.default_format', 'table')
 
 
 ##
-def glm_predictions(data: pd.HDFStore, output: pd.HDFStore):
+# ++output_dir = Path('..','output').resolve()
+# ++data = pd.HDFStore(str(output_dir / 'data.h5'))
+# ++output = pd.HDFStore(str(output_dir / 'output.h5'))
+# ++model_save_dir = str(output_dir)
 
+
+##
+def glm_predictions(data: pd.HDFStore, output: pd.HDFStore, model_save_dir=None):
+    # +-
     ##
     logger.info("Dropping store data before changepoint.")
     select_idx = remove_before_changepoint(data, None)
@@ -31,7 +43,8 @@ def glm_predictions(data: pd.HDFStore, output: pd.HDFStore):
     logger.debug("Log transform on sales data")
     idx = data.select_as_coordinates('train', 'Sales > 0')
     select_idx = select_idx.intersection(idx)
-    data.put('train_logsales', np.log(data.select('train', 'columns = Sales')), data_columns=True)
+    with warnings_to_log('divide by zero'):
+        data.put('train_logsales', np.log(data.select('train', 'columns = Sales')), data_columns=True)
     logger.info("Reduced to {0}".format(len(select_idx)))
 
     ##
@@ -40,8 +53,17 @@ def glm_predictions(data: pd.HDFStore, output: pd.HDFStore):
 
     ##
     logger.info("Running elasticnet predictions")
-    predict_elasticnet(data, output, select_idx, linear_features, test_set_stores, with_cv=False,
-                       eval_function=exp_rmspe, steps=15, step_by=3)
+    glm = GLMPredictions(stores=test_set_stores, steps=15, step_by=3)
+    glm.fit(features=linear_features, data_store=data, train_key='train',
+            train_idx=select_idx, label_key='train_logsales')
+
+    ##
+    glm.predict(features=linear_features, data_store=data, test_key='test',
+                output_store=output)
+
+    ##
+    if model_save_dir:
+        glm.save_model(model_save_dir)
 
 
 ##
@@ -62,6 +84,7 @@ nrounds = 3000
 
 ##
 def xgb_predictions(data: pd.HDFStore, output: pd.HDFStore):
+    # +-
     ##
     logger.info("Dropping store data before changepoint.")
     select_idx = remove_before_changepoint(data, None)
@@ -78,7 +101,8 @@ def xgb_predictions(data: pd.HDFStore, output: pd.HDFStore):
     logger.debug("Log transform on sales data")
     idx = data.select_as_coordinates('train', 'Sales > 0')
     select_idx = select_idx.intersection(idx)
-    data.put('train_logsales', np.log(data.select('train', 'columns = Sales')), data_columns=True)
+    with warnings_to_log('divide by zero'):
+        data.put('train_logsales', np.log(data.select('train', 'columns = Sales')), data_columns=True)
     logger.info("Reduced to {0}".format(len(select_idx)))
 
     ##
@@ -89,6 +113,7 @@ def xgb_predictions(data: pd.HDFStore, output: pd.HDFStore):
 
 ##
 def mix_models(output: pd.HDFStore):
+    # +-
     ##
     glm_preds = output.get('glm_predictions')
 

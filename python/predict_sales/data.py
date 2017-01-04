@@ -1,20 +1,21 @@
+#!/usr/bin/env python
+
 ##
 # import pyximport;
 #
 # pyximport.install()
-import warnings
-
-from predict_sales import data_helpers
 import logging
-from collections import OrderedDict, namedtuple
+import warnings
+from collections import OrderedDict
 from functools import partial
 from itertools import product, chain, starmap
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
 from tqdm import tqdm
 
+from predict_sales import data_helpers
 
 # ToDo: Remove this
 REDUCE_DATA = 5
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 logger.info("Module loaded")
 
 pd.set_option('float_format', "{0:.2f}".format)
-pd.set_option('io.hdf.default_format','table')
+pd.set_option('io.hdf.default_format', 'table')
 
 ##
 # md
@@ -170,7 +171,7 @@ def month_to_nums(months):
 
 def is_promo2_active(date, promo2, start_year, start_week, interval):
     if ((date.year > start_year)
-            or ((date.year == start_year) and (date.week >= start_week))):
+        or ((date.year == start_year) and (date.week >= start_week))):
         if date.month in interval:
             return 1
     return 0
@@ -228,7 +229,6 @@ def make_after_stairs(g, *features, days):
 
 ##
 class Data:
-
     ##
     @classmethod
     def process_input(cls, store_file, train_file, test_file, output_file):
@@ -602,6 +602,7 @@ class Data:
         logger.info(repr(data))
         data.close()
 
+
 ##
 example_stores = (
     388,  # most typical by svd of Sales time series
@@ -612,24 +613,12 @@ example_stores = (
 
 
 ##
-def make_fold(train, date, step, predict_interval, step_by):
-    cross_val_fold = namedtuple('cross_val_fold', 'train_idx test_idx')
-    train = train.reset_index(drop=True)
-    dates = pd.date_range(date.min(), date.max())
-    total = dates.shape[0]
-    last_train = total - predict_interval - (step - 1) * step_by
-    last_train_date = dates[last_train - 1]
-    last_predict = last_train + predict_interval
-    last_predict_date = dates[last_predict - 1]
-    train_idx = train.index[date <= last_train_date]
-    test_idx = train.index[(date > last_train_date) & (date <= last_predict_date)]
-    return cross_val_fold(train_idx=train_idx, test_idx=test_idx)
-
-
-##
 if __name__ == '__main__':
     ##
-    store_file, train_file, test_file = "../input/store.csv", "../input/train.csv", "../input/test.csv"
-    output_file = "../output/data.h5"
+    input_dir = Path("..", "input").resolve()
+    store_file, train_file, test_file = (str(input_dir / "store.csv"),
+                                         str(input_dir / "train.csv"),
+                                         str(input_dir / "test.csv"))
+    output_file = str(Path("..", "output", "data.h5"))
     ##
     Data.process_input(store_file, train_file, test_file, output_file)
