@@ -6,13 +6,11 @@ import pandas as pd
 
 from predict_sales.data import linear_features, xgb_features, log_lm_features
 from predict_sales.functions import remove_before_changepoint, remove_outliers_lm, xgb_expm1_rmspe, predict_xgboost, \
-    GLMPredictions
-from predict_sales.utils.warnings_ import set_warnings_handlers_from, warnings_to_log
+    GLMPredictions, DataFromHDF, XGBPredictions
+from predict_sales.utils.warnings_ import warnings_to_log
 
 logger = logging.getLogger(__name__)
 # +-from predict_sales import logger
-
-set_warnings_handlers_from(logger)
 
 pd.set_option('io.hdf.default_format', 'table')
 
@@ -53,13 +51,15 @@ def glm_predictions(data: pd.HDFStore, output: pd.HDFStore, model_save_dir=None)
 
     ##
     logger.info("Running elasticnet predictions")
+    X = DataFromHDF(data_store=data, key='train', select_idx=select_idx, columns=linear_features)
+    y = DataFromHDF(data_store=data, key='train_logsales', select_idx=select_idx, column='Sales')
     glm = GLMPredictions(stores=test_set_stores, steps=15, step_by=3)
-    glm.fit(features=linear_features, data_store=data, train_key='train',
-            train_idx=select_idx, label_key='train_logsales')
+    glm.fit(X, y)
 
     ##
-    glm.predict(features=linear_features, data_store=data, test_key='test',
-                output_store=output)
+    X = DataFromHDF(data_store=data, key='test', columns=linear_features)
+    glm_output = DataFromHDF(data_store=output, key='test/glm', data_columns=True)
+    glm.predict(X, glm_output)
 
     ##
     if model_save_dir:
@@ -83,7 +83,7 @@ nrounds = 3000
 
 
 ##
-def xgb_predictions(data: pd.HDFStore, output: pd.HDFStore):
+def xgb_predictions(data: pd.HDFStore, output: pd.HDFStore, model_save_dir=None):
     # +-
     ##
     logger.info("Dropping store data before changepoint.")
@@ -107,17 +107,28 @@ def xgb_predictions(data: pd.HDFStore, output: pd.HDFStore):
 
     ##
     logger.info("Running xgboost predictions")
-    predict_xgboost(data, output, select_idx, xgb_features, xgb_expm1_rmspe,
-                    params=xparams, nrounds=nrounds)
+    X = DataFromHDF(data_store=data, key='train', select_idx=select_idx, columns=xgb_features)
+    y = DataFromHDF(data_store=data, key='train_logsales', select_idx=select_idx, column='Sales')
+    xgb = XGBPredictions(eval_function=xgb_expm1_rmspe, params=xparams, nrounds=3000)
+    xgb.fit(X, y)
+
+    ##
+    X = DataFromHDF(data_store=data, key='test', columns=xgb_features)
+    xgb_output = DataFromHDF(data_store=output, key='test/xgb', data_columns=True)
+    xgb.predict(X, xgb_output)
+
+    ##
+    if model_save_dir:
+        xgb.save_model(model_save_dir)
 
 
 ##
-def mix_models(output: pd.HDFStore):
+def mix_models(output: pd.HDFStore, result_file):
     # +-
     ##
-    glm_preds = output.get('glm_predictions')
+    glm_preds = output.get('test/glm')
 
-    xgb_preds = output.get('xgb_predictions')
+    xgb_preds = output.get('test/xgb')
 
     assert glm_preds.shape == xgb_preds.shape
 
@@ -126,8 +137,28 @@ def mix_models(output: pd.HDFStore):
     joined['Sales'] = 0.985 * (joined['PredictedSales_x'] + joined['PredictedSales_y']) / 2
     assert joined.shape[0] == glm_preds.shape[0]
 
-    ##
     joined = joined[['Id', 'Sales']]
-    joined.to_csv('mix.csv', index=False)
+
+    ##
+    joined.to_csv(result_file, index=False)
 
     return joined
+
+
+# +-
+##
+if __name__ == '__main__':
+    output_dir = Path('..', '..', 'output').resolve()
+    result_file = str(output_dir / 'mix.csv')
+    data = pd.HDFStore(str(output_dir / 'data.h5'))
+    output = pd.HDFStore(str(output_dir / 'output.h5'))
+    model_save_dir = str(output_dir)
+
+    glm_predictions(data, output, model_save_dir)
+
+    xgb_predictions(data, output, model_save_dir)
+
+    mix_models(output, result_file)
+
+    data.close()
+    output.close()
