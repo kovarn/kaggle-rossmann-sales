@@ -91,6 +91,7 @@ def xgb_predictions(data: pd.HDFStore, output: pd.HDFStore, model_save_dir=None)
 
     ##
     logger.info("Dropping stores not in test set. Initial shape")
+    # noinspection PyUnusedLocal
     test_set_stores = data.select_column('test', 'Store').unique()
     idx = data.select_as_coordinates('train', 'Store in test_set_stores')
     select_idx = select_idx.intersection(idx)

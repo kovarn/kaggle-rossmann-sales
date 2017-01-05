@@ -8,7 +8,6 @@ from sklearn import linear_model
 from sklearn.externals import joblib
 from tqdm import tqdm
 
-from .data import log_lm_features
 from .utils.warnings_ import set_warnings_handlers_from, warnings_to_log
 
 logger = logging.getLogger(__name__)
@@ -33,6 +32,7 @@ def remove_before_changepoint(data: pd.HDFStore, select_idx: pd.Index = None):
                     969: '2013-03-10',
                     803: '2014-01-07',
                     91: '2014-01-14'}
+    # noinspection PyUnusedLocal
     for store, date in changepoints.items():
         idx = data.select_as_coordinates('train', 'Store != store or Date > pd.Timestamp(date)')
         if select_idx is not None:
@@ -79,7 +79,7 @@ def remove_outliers_lm(data: pd.HDFStore, select_idx: pd.Index, features, stores
             sales = data.select('train_logsales', store_idx).set_index(store_idx)['Sales']
             assert sales.shape == (len(store_idx),)
 
-            with_fit = predict_lm_per_store(data, store_idx, log_lm_features, sales)
+            with_fit = predict_lm_per_store(data, store_idx, features, sales)
 
             errors = abs(with_fit['PredictedSales'] - sales)
             z_scores = errors / errors.median()
@@ -137,7 +137,7 @@ class DataFromHDF:
         assert isinstance(self.data_store, pd.HDFStore)
         assert isinstance(self.key, str)
 
-    def get(self, sub_idx=None):
+    def get(self):
         args = dict(key=self.key, where=self.select_idx, columns=self.columns)
         args = {k: v for k, v in args.items() if v is not None}
         logger.debug("Reading {0!r} data from {1!r}".format(self.key, self.data_store.filename))
@@ -169,9 +169,9 @@ class DataFromHDF:
                     self.data_store.select(self.key, self.select_idx, columns=[column]).iloc[:, 0].values,
                     index=self.select_idx)
         if self.select_idx is None:
-            return self.data_store.select_column(self.key, column)
+            return result
         else:
-            return self.data_store.select_column(self.key, column)[self.select_idx]
+            return result[self.select_idx]
 
     def put(self, df: pd.DataFrame):
         args = dict(key=self.key, value=df, data_columns=self.data_columns)
@@ -210,7 +210,7 @@ class XGBPredictions:
         self.params = params
         self.eval_function = eval_function
 
-        self.model = None  # type: xgb.Booster
+        self.model = None  # type: xgboost.Booster
 
     def fit(self, X: DataFromHDF, y: DataFromHDF):
 
@@ -308,6 +308,7 @@ class XGBPredictions:
 
 
 class GLMPredictions:
+    # noinspection PyDefaultArgument
     def __init__(self, stores=None, steps=15, step_by=3, predict_interval=6 * 7,
                  l1_ratio=[.1, .5, .7, .9, .95, .99, 1],
                  n_alphas=100, eval_function=None, n_jobs=-1, selection='random'):

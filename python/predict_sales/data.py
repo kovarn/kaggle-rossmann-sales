@@ -170,10 +170,11 @@ def month_to_nums(months):
 # 'Date', 'Promo2', 'Promo2SinceYear', 'Promo2SinceWeek', 'PromoInterval'
 
 def is_promo2_active(date, promo2, start_year, start_week, interval):
-    if ((date.year > start_year)
-        or ((date.year == start_year) and (date.week >= start_week))):
-        if date.month in interval:
-            return 1
+    if promo2:
+        if ((date.year > start_year)
+            or ((date.year == start_year) and (date.week >= start_week))):
+            if date.month in interval:
+                return 1
     return 0
 
 
@@ -539,6 +540,7 @@ class Data:
                     )
                     assert check_nulls(joined, 'Promo2Active')
                 else:
+                    # noinspection PyArgumentList
                     joined['Promo2Active'] = data_helpers.is_promo2_active(
                         store_details['Promo2'], np.int64(store_details['Promo2SinceYear']),
                         np.int64(store_details['Promo2SinceWeek']),
@@ -610,7 +612,6 @@ example_stores = (
     851,  # large gap in 2014
     357  # small gap
 )
-
 
 ##
 if __name__ == '__main__':
