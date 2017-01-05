@@ -1,10 +1,8 @@
 import logging
-import warnings
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import sklearn
 import xgboost
 from sklearn import linear_model
 from sklearn.externals import joblib
@@ -73,9 +71,6 @@ def select_features(train, features, inplace=False):
 
 def remove_outliers_lm(data: pd.HDFStore, select_idx: pd.Index, features, stores,
                        z_score=2.5):
-    # logger.info("{f} train shape {tr}".format(f=remove_outliers_lm.__name__, tr=train.shape))
-    # if 'Id' not in train.columns:
-    #     logger.info('Adding Id to train data columns.')
     def per_store():
         for store in tqdm(stores, desc="Removing outliers"):
             logger.debug("Store {}".format(store))
@@ -116,68 +111,6 @@ def cv_generator(train, date, steps, predict_interval, step_by):
     for step in range(1, steps + 1):
         yield make_fold(train=train, date=date, step=step,
                         predict_interval=predict_interval, step_by=step_by)
-
-
-def predict_elasticnet_per_store(data: pd.HDFStore, train_select_idx: pd.Index, test_select_idx: pd.Index,
-                                 features, sales, store,
-                                 with_cv=False, eval_function=None, steps=13,
-                                 predict_interval=6 * 7, step_by=7,
-                                 l1_ratio=[.99, 1], family="gaussian", n_alphas=100):
-    store_train = data.select('train', train_select_idx, columns=list(features)).set_index(train_select_idx)
-    date = data.select_column('train', 'Date')[train_select_idx]
-
-    assert date.shape[0] == store_train.shape[0]
-    assert store_train.shape == (len(train_select_idx), len(features))
-    logger.debug('Store {0:4d}: train shape {1}, sales shape{2}'
-                 .format(int(store), store_train.shape, sales.shape))
-    logger.debug(store_train.values.flags)
-
-    cv = list(cv_generator(store_train, date, steps, predict_interval=predict_interval, step_by=step_by))
-    en = linear_model.ElasticNetCV(l1_ratio=l1_ratio, n_alphas=n_alphas, cv=cv,
-                                   n_jobs=-1, selection='random')
-
-    fit = en.fit(store_train, sales)
-
-    logger.debug('Store {0:4d}: alpha {alpha}, l1 ratio {l1_ratio}'
-                 .format(int(store), alpha=fit.alpha_, l1_ratio=fit.l1_ratio_))
-    # logger.debug('Store {0:4d}: MSE path {1}'.format(int(store), fit.mse_path_))
-
-    if with_cv:
-        cv_errors = []
-        for fold in cv:
-            cv_en = linear_model.ElasticNet(alpha=fit.alpha_, l1_ratio=fit.l1_ratio_)
-            cv_train = store_train.iloc[fold.train_idx, :]
-            cv_train_sales = sales[fold.train_idx]
-            cv_fit = cv_en.fit(cv_train, cv_train_sales)
-            cv_test = store_train.iloc[fold.test_idx, :]
-            cv_test_sales = sales[fold.test_idx]
-            cv_pred = cv_fit.predict(cv_test)
-            cv_error = rmspe(np.exp(cv_pred) * cv_test['Open'], np.exp(cv_test_sales))
-            cv_errors.append(cv_error)
-
-        cv_median_error = np.median(cv_errors)
-        logger.debug('Store {0}. CV errors {1}'.format(store, cv_errors))
-        logger.debug('Store {0}. CV median error {1}'.format(store, cv_median_error))
-
-    # cv = list(cv_generator(store_train, steps, predict_interval=predict_interval, step_by=step_by))
-    #     scores = model_selection.cross_val_score(fit, X=store_train, y=sales,
-    #                                              scoring=None, cv=cv, n_jobs=1, pre_dispatch='n_jobs')
-    #     logger.info('Median score: {0}'.format(scores.median()))
-
-    store_test = data.select('test', test_select_idx, columns=list(features))  # type: pd.DataFrame
-    store_test_id = store_test.index
-    store_test.set_index(test_select_idx, inplace=True)
-    assert store_test.shape == (len(test_select_idx), len(features))
-    logger.debug('Store test shape {}'.format(store_test.shape))
-
-    pred = fit.predict(store_test)
-
-    result = pd.DataFrame(index=test_select_idx)
-    result['Id'] = store_test_id
-    result['PredictedSales'] = np.exp(pred) * store_test['Open']
-    return result
-    # store_test = pd.concat([store_test_id, pd.Series(pred, name='PredictedSales')], axis=1)
-    # # store_test.columns = ['Id', 'PredictedSales']
 
 
 class DataFromHDF:
@@ -282,7 +215,6 @@ class XGBPredictions:
     def fit(self, X: DataFromHDF, y: DataFromHDF):
 
         logger.info("Fitting model.")
-        # logger.info("Reading {0!r} data from {1!r}".format(train_key, data_store.filename))
 
         train = X.get()
         logger.info('Train data shape {}'.format(train.shape))
@@ -336,7 +268,7 @@ class XGBPredictions:
         Directory where the file is to be created. Adds a timestamp (in UTC)
         in the file name.
         """
-        
+
         try:
             Path(directory_path).mkdir(parents=True)
             # Not using exist_ok parameter in order to log directory creation.
@@ -364,7 +296,7 @@ class XGBPredictions:
         :return: XGBPredictions object
         """
         logger.info("Loading model from {0}".format(file_name))
-        
+
         loaded_object = joblib.load(file_name)
         if isinstance(loaded_object, cls):
             logger.debug("Loaded model.")
@@ -396,19 +328,13 @@ class GLMPredictions:
             stores = self.stores
 
         logger.info("Fitting model for {0} stores.".format(len(stores)))
-        # logger.info("Reading {0!r} data from {1!r}".format(train_key, data_store.filename))
 
         for store in tqdm(stores, desc="GLM predictions"):
             logger.debug("Store {}".format(store))
             store_X = X.subset('Store == {store}'.format(store=store))
 
-            # store_train_idx = data_store.select_as_coordinates(train_key, 'Store == store')
-            # store_test_idx = data_store.select_as_coordinates('test', 'Store == store')
-            # if train_idx is not None:
-            #     store_train_idx = store_train_idx.intersection(train_idx)
-
             store_y = y.subset(store_X)
-            # sales = data_store.select(label_key, store_train_idx).set_index(store_train_idx)['Sales']
+
             assert store_X.select_idx.shape == store_y.select_idx.shape
 
             self.fit_per_store(store_X, store_y, store,
@@ -471,7 +397,7 @@ class GLMPredictions:
 
                 yield self.predict_per_store(store_X, store)
 
-        result = pd.concat(per_store())   # type: pd.DataFrame
+        result = pd.concat(per_store())  # type: pd.DataFrame
 
         if output:
             output.put(result)
@@ -481,9 +407,6 @@ class GLMPredictions:
 
     def predict_per_store(self, X, store):
         store_test = X.get()  # type: pd.DataFrame
-        # store_test_id = X.get_index()
-        # store_test.set_index(store_test_idx, inplace=True)
-        # assert store_test.shape == (len(store_test_idx), len(features))
         logger.debug('Store test shape {}'.format(store_test.shape))
 
         pred = self.models[store].predict(store_test)
@@ -506,7 +429,7 @@ class GLMPredictions:
         Directory where the file is to be created. Adds a timestamp (in UTC)
         in the file name.
         """
-        
+
         try:
             Path(directory_path).mkdir(parents=True)
             # Not using exist_ok parameter in order to log directory creation.
@@ -520,7 +443,7 @@ class GLMPredictions:
         pkl_file_name = datetime.strftime(
             datetime.utcnow(),
             "%Y-%m-%d-%H%M") + '-' + __class__.__name__ + ".pkl"
-        
+
         pkl_file = str(Path(directory_path, pkl_file_name))
         joblib.dump(self, pkl_file)
         logger.info("Saved model to {0}".format(pkl_file))
@@ -545,93 +468,6 @@ class GLMPredictions:
             raise TypeError(msg)
 
 
-@warnings_to_log('ConvergenceWarning')
-def predict_elasticnet(data: pd.HDFStore, output: pd.HDFStore, select_idx: pd.Index, features, stores,
-                       with_cv=False, eval_function=None, steps=13,
-                       predict_interval=6 * 7, step_by=7,
-                       l1_ratio=[.1, .5, .7, .9, .95, .99, 1], family="gaussian",
-                       n_alphas=100):
-    logger.info("glm predictions. Reading data from {0}".format(data.filename))
-    assert family in ("gaussian", "poisson")
-
-    def per_store():
-        for store in tqdm(stores, desc="GLM predictions"):
-            logger.debug("Store {}".format(store))
-            store_train_idx = data.select_as_coordinates('train', 'Store == store')
-            store_test_idx = data.select_as_coordinates('test', 'Store == store')
-            store_train_idx = store_train_idx.intersection(select_idx)
-            sales = data.select('train_logsales', store_train_idx).set_index(store_train_idx)['Sales']
-            assert sales.shape == (len(store_train_idx),)
-
-            yield predict_elasticnet_per_store(data, store_train_idx, store_test_idx,
-                                               features, sales, store,
-                                               with_cv=with_cv, eval_function=eval_function, steps=steps,
-                                               predict_interval=predict_interval, step_by=step_by,
-                                               l1_ratio=l1_ratio, family=family, n_alphas=n_alphas)
-
-    try:
-        output.remove('glm_predictions')
-    except KeyError:
-        pass
-
-    with warnings.catch_warnings():
-        warnings.simplefilter(action='ignore', category=sklearn.exceptions.ConvergenceWarning)
-        for preds in per_store():
-            output.append('glm_predictions', preds, data_columns=True)
-            logger.debug('Wrote predictions, shape {0}'.format(preds.shape))
-
-    result = output.get_storer('glm_predictions')
-    logger.info('Wrote predictions, shape{0} to {1}'.format((result.nrows, result.ncols), output.filename))
-
-    # preds = GLMPredictions(data_filename=data.filename)
-    # preds.stores = stores
-    # preds.select_idx = select_idx
-    # preds.output_filename = output.filename
-    # preds.features = features
-    # preds.steps = steps
-    # preds.step_by = step_by
-    # preds.predict_interval = predict_interval
-    # preds.l1_ratio = l1_ratio
-    # preds.n_alphas = n_alphas
-
-
-def predict_xgboost(data: pd.HDFStore, output: pd.HDFStore, select_idx: pd.Index,
-                    features, eval_function, params,
-                    nrounds):
-    logger.info("xgboost predictions. Reading data from {0}".format(data.filename))
-
-    train = data.select('train', select_idx, columns=list(features))
-    logger.info('Train data shape {}'.format(train.shape))
-    sales = data.select('train_logsales', select_idx)['Sales']
-    logger.info('Sales data shape {}'.format(sales.shape))
-
-    dtrain = xgboost.DMatrix(train, label=sales)
-
-    del train, sales
-
-    test = data.select('test', columns=list(features))
-    logger.info('Test data shape {}'.format(test.shape))
-
-    dtest = xgboost.DMatrix(test)
-
-    del test
-
-    # specify validations set to watch performance
-    watchlist = [(dtrain, 'train')]
-    fit = xgboost.train(params=params, dtrain=dtrain, num_boost_round=nrounds, evals=watchlist,
-                        feval=eval_function, early_stopping_rounds=100, maximize=False,
-                        verbose_eval=100)
-
-    pred = fit.predict(dtest)
-
-    result = pd.DataFrame(data.select_column('test', 'index'))
-    result.columns = ['Id']
-    result['PredictedSales'] = np.exp(pred) * data.select_column('test', 'Open')
-
-    output.put('xgb_predictions', result, data_columns=True)
-    logger.info('Wrote predictions, shape {0} to {1}'.format(result.shape, output.filename))
-
-
 def rmspe(predicted, actual):
     assert predicted.shape == actual.shape
     idx = actual > 0
@@ -645,8 +481,6 @@ def exp_rmspe(predicted, actual):
 def xgb_expm1_rmspe(predicted, dtrain):
     return "rmspe", rmspe(np.expm1(predicted), np.expm1(dtrain.get_label()))
 
-
-# cross_val_fold = namedtuple('cross_val_fold', 'train_idx test_idx')
 
 def make_fold(train, date, step, predict_interval, step_by):
     train = train.reset_index(drop=True)

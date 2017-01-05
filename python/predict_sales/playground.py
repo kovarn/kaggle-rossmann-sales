@@ -5,8 +5,7 @@ import numpy as np
 import pandas as pd
 
 from predict_sales.data import linear_features, xgb_features, log_lm_features
-from predict_sales.functions import remove_before_changepoint, remove_outliers_lm, xgb_expm1_rmspe, predict_xgboost, \
-    GLMPredictions, DataFromHDF, XGBPredictions
+from predict_sales.functions import remove_before_changepoint, remove_outliers_lm, xgb_expm1_rmspe, GLMPredictions, DataFromHDF, XGBPredictions
 from predict_sales.utils.warnings_ import warnings_to_log
 
 logger = logging.getLogger(__name__)
