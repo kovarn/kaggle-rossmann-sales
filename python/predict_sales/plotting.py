@@ -1,3 +1,4 @@
+import datetime
 import logging
 
 import ipywidgets as widgets
@@ -5,7 +6,7 @@ import numpy as np
 import pandas as pd
 from IPython.core.display import display
 from bokeh.io import push_notebook, output_notebook
-from bokeh.models import ColumnDataSource
+from bokeh.models import ColumnDataSource, LinearInterpolator
 from bokeh.plotting import figure, show
 
 from predict_sales.functions import DataFromHDF
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 output_notebook()
 
 data = pd.HDFStore('../output/full_run/data.h5')
-output = pd.HDFStore('../output/output.h5')
+output = pd.HDFStore('../output/5_stores_output.h5')
 
 
 class Sales:
@@ -35,7 +36,9 @@ sales_source.predict_glm = DataFromHDF(data_store=output, key='train/glm')
 sales_source.predict_xgb = DataFromHDF(data_store=output, key='train/xgb')
 
 source_columns = ['Id', 'Sales', 'Date',
+                  'left', 'right', 'left_', 'right_',
                   'PredictedSales_glm', 'PredictedSales_xgb', 'PredictedSales',
+                  'RelativeError_glm', 'RelativeError_xgb', 'RelativeError'
                   ]
 esource_columns = ['Id', 'Date',
                    'RelativeError_glm', 'RelativeError_xgb', 'RelativeError']
@@ -57,15 +60,43 @@ glyphs = dict()
 # p.circle('Date', 'Sales', size=8, fill_color='white', alpha=1, source=source)
 
 glyphs['Sales'] = (p.circle('Date', 'Sales', color='navy', size=4, alpha=0.9, legend='actual', source=source),
-                   p.line('Date', 'Sales', color='navy', legend='actual', source=source))
-glyphs['PredictedSales_glm'] = (p.square('Date', 'PredictedSales_glm', color='orange', size=4, alpha=0.9, legend='predicted: glm',
-                                      source=source),
-                                p.line('Date', 'PredictedSales_glm', color='orange', alpha=0.7, legend='predicted: glm',
-                                      source=source))
-glyphs['PredictedSales_xgb'] = (p.square('Date', 'PredictedSales_xgb', color='red', size=4, alpha=0.9, legend='predicted: xgb', source=source),
-                                p.line('Date', 'PredictedSales_xgb', color='red', alpha=0.7, legend='predicted: xgb', source=source))
-glyphs['PredictedSales'] = (p.diamond('Date', 'PredictedSales', color='purple', size=4, alpha=0.9, legend='predicted: mix', source=source),
-                            p.line('Date', 'PredictedSales', color='purple', alpha=0.7, legend='predicted: mix', source=source))
+                   p.line('Date', 'Sales', color='navy', alpha=0.5, legend='actual', source=source))
+glyphs['PredictedSales_glm'] = (
+    p.square('left_', 'PredictedSales_glm', color='orange', size=4, alpha=0.9, legend='predicted: glm', source=source),
+    # p.line('left_', 'PredictedSales_glm', color='orange', alpha=0.7, legend='predicted: glm', source=source),
+    p.segment(x0='left_', y0='PredictedSales_glm', x1='left_', y1='Sales', color='orange', alpha=0.7,
+              legend='predicted: glm', source=source)
+)
+glyphs['PredictedSales_xgb'] = (
+    p.square('right_', 'PredictedSales_xgb', color='red', size=4, alpha=0.9, legend='predicted: xgb', source=source),
+    # p.line('right_', 'PredictedSales_xgb', color='red', alpha=0.7, legend='predicted: xgb', source=source),
+    p.segment(x0='right_', y0='PredictedSales_xgb', x1='right_', y1='Sales', color='red', alpha=0.7,
+              legend='predicted: xgb', source=source)
+)
+glyphs['PredictedSales'] = (
+    p.diamond('Date', 'PredictedSales', color='purple', size=4, alpha=0.9, legend='predicted: mix', source=source),
+    # p.line('Date', 'PredictedSales', color='purple', alpha=0.7, legend='predicted: mix', source=source),
+    p.segment(x0='Date', y0='PredictedSales', x1='Date', y1='Sales', color='purple', alpha=0.7, legend='predicted: mix',
+              source=source)
+)
+
+size_mapper = LinearInterpolator(
+    x=[0, 2],
+    y=[0, 30]
+)
+
+glyphs['RelativeError_glm'] = (
+    p.quad(bottom=0, top={'field': 'RelativeError_glm', 'transform': size_mapper}, left='left', right='right',
+           color='orange', alpha=0.3, legend='error: glm', source=source)
+)
+glyphs['RelativeError_xgb'] = (
+    p.quad(bottom=0, top={'field': 'RelativeError_xgb', 'transform': size_mapper}, left='left', right='right',
+           color='red', alpha=0.3, legend='error: xgb', source=source)
+)
+glyphs['RelativeError'] = (
+    p.quad(bottom=0, top={'field': 'RelativeError', 'transform': size_mapper}, left='left', right='right',
+           color='purple', alpha=0.3, legend='error: mix', source=source)
+)
 
 # NEW: customize by setting attributes
 p.title.text = "Sales by date"
@@ -129,8 +160,10 @@ def update_store(store, show_zeros):
 
     # assert plot_sales.shape[0] == plot_sales_source.actual.select_idx.shape[0]
 
-    # plot_sales['left'] = plot_sales['Date'] - datetime.timedelta(days=0.5)
-    # plot_sales['right'] = plot_sales['Date'] + datetime.timedelta(days=0.5)
+    plot_sales['left'] = plot_sales['Date'] - datetime.timedelta(days=0.5)
+    plot_sales['right'] = plot_sales['Date'] + datetime.timedelta(days=0.5)
+    plot_sales['left_'] = plot_sales['Date'] - datetime.timedelta(days=0.2)
+    plot_sales['right_'] = plot_sales['Date'] + datetime.timedelta(days=0.2)
 
     plot_sales['PredictedSales'] = (0.97 * plot_sales['PredictedSales_glm'] + 0.985 * plot_sales[
         'PredictedSales_xgb']) / 2
@@ -150,7 +183,6 @@ def update_store(store, show_zeros):
 
 ##
 def update_date_range(date_start, date_end):
-
     p.x_range.start = np.datetime64(date_start, 'D')
     p.x_range.end = np.datetime64(date_end, 'D')
     # p.title.text = str(np.random.randint(1000))
