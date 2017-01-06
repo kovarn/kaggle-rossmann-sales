@@ -180,6 +180,13 @@ class DataFromHDF:
         logger.info('Wrote output, shape {0} to {1!r} in {2!r}'
                     .format(df.shape, self.key, self.data_store.filename))
 
+    def append(self, df: pd.DataFrame):
+        args = dict(key=self.key, value=df, data_columns=self.data_columns)
+        args = {k: v for k, v in args.items() if v is not None}
+        self.data_store.append(**args)
+        logger.info('Appended output, shape {0} to {1!r} in {2!r}'
+                    .format(df.shape, self.key, self.data_store.filename))
+
     def subset(self, where=None, copy=True):
         if copy:
             sub = __class__(**self.__dict__)
@@ -188,8 +195,10 @@ class DataFromHDF:
 
         if isinstance(where, __class__):
             sub_select_idx = where.select_idx
-        else:
+        elif isinstance(where, str):
             sub_select_idx = sub.data_store.select_as_coordinates(sub.key, where=where)
+        else:
+            sub_select_idx = pd.Index(where)
 
         if sub.select_idx is not None:
             sub.select_idx = sub.select_idx.intersection(sub_select_idx)
@@ -234,7 +243,7 @@ class XGBPredictions:
 
         return self
 
-    def predict(self, X: DataFromHDF, output: DataFromHDF = None):
+    def predict(self, X: DataFromHDF):
 
         test = X.get()
         logger.info('Test data shape {}'.format(test.shape))
@@ -255,10 +264,7 @@ class XGBPredictions:
         result.columns = ['Id']
         result['PredictedSales'] = np.exp(pred) * open_.values
 
-        if output:
-            output.put(result)
-        else:
-            return result
+        return result
 
     def save_model(self, directory_path=None):
         """
@@ -384,7 +390,7 @@ class GLMPredictions:
             logger.debug('Store {0}. CV errors {1}'.format(store, cv_errors))
             logger.debug('Store {0}. CV median error {1}'.format(store, cv_median_error))
 
-    def predict(self, X: DataFromHDF, output: DataFromHDF = None, stores=None):
+    def predict(self, X: DataFromHDF, stores=None):
 
         if stores is None:
             stores = self.stores
@@ -400,11 +406,7 @@ class GLMPredictions:
 
         result = pd.concat(per_store())  # type: pd.DataFrame
 
-        if output:
-            output.put(result)
-
-        else:
-            return result
+        return result
 
     def predict_per_store(self, X, store):
         store_test = X.get()  # type: pd.DataFrame
